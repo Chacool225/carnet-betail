@@ -1,0 +1,7 @@
+{
+  "name": "@carnet/contract",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Contrat OpenAPI de l'API (source de vérité entre le backend et le front)",
+  "files": ["openapi.yaml"]
+}

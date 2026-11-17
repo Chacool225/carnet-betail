@@ -1,0 +1,1003 @@
+openapi: 3.0.3
+info:
+  title: Carnet de santé numérique du bétail — API
+  version: 0.1.0
+  description: |
+    Lot 1 : authentification, profil, zones, vétérinaires.
+    Lot 2 : animaux et lots, scan, photos.
+    Lot 3 : accès vétérinaire (30 jours), actes de santé, rappels, mortalité, signalements de maladie.
+    Lot 4 : ventes, abattages, transferts, vol, marché, alertes.
+    Lot 5 : synchronisation hors-ligne, indicateurs, exports CSV.
+    Les lots 2 à 5 (animaux, santé, accès vétérinaire, transferts, alertes, synchronisation) s'ajouteront à ce fichier.
+    Toutes les erreurs ont la forme `{ code, message, details? }`.
+    Les écritures acceptent l'en-tête `Idempotency-Key` pour être rejouées sans danger (mode hors-ligne).
+servers:
+  - url: http://localhost:3000
+tags:
+  - name: Auth
+  - name: Profil
+  - name: Référentiels
+  - name: Animaux
+  - name: Accès vétérinaire
+  - name: Santé
+  - name: Mouvements
+  - name: Marché
+  - name: Alertes
+  - name: Synchronisation
+  - name: Indicateurs
+paths:
+  /health:
+    get:
+      summary: État du service
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: object, properties: { status: { type: string }, db: { type: string } } } } } }
+        '503': { description: Base injoignable }
+  /zones:
+    get:
+      tags: [Référentiels]
+      summary: Zones d'élevage (public)
+      responses:
+        '200':
+          description: Liste des zones
+          content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/Zone' } } } } } }
+  /vets:
+    get:
+      tags: [Référentiels]
+      summary: Vétérinaires vérifiés
+      security: [{ bearer: [] }]
+      parameters:
+        - { name: zoneId, in: query, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Liste
+          content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/VetSummary' } } } } } }
+        '401': { $ref: '#/components/responses/Error' }
+  /vets/pending:
+    get:
+      tags: [Référentiels]
+      summary: Vétérinaires en attente de vérification (autorité)
+      security: [{ bearer: [] }]
+      responses:
+        '200':
+          description: Liste, du plus ancien au plus récent
+          content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { type: object, properties: { id: { type: string, format: uuid }, name: { type: string }, phone: { type: string }, zone: { type: string, nullable: true }, clinic: { type: string, nullable: true }, orderNumber: { type: string }, registeredAt: { type: string, format: date-time, nullable: true } } } } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+  /eleveurs/lookup:
+    get:
+      tags: [Référentiels]
+      summary: Retrouver un autre éleveur par téléphone (vente ou transfert)
+      security: [{ bearer: [] }]
+      parameters:
+        - { name: phone, in: query, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Éleveur trouvé
+          content: { application/json: { schema: { type: object, properties: { id: { type: string, format: uuid }, name: { type: string }, zone: { type: string, nullable: true } } } } }
+        '404': { description: user_not_found, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '403': { $ref: '#/components/responses/Error' }
+  /vets/{id}/verify:
+    post:
+      tags: [Référentiels]
+      summary: Valider le numéro d'ordre d'un vétérinaire (autorité)
+      security: [{ bearer: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      responses:
+        '200': { description: Vérifié, content: { application/json: { schema: { type: object, properties: { id: { type: string }, verified: { type: boolean } } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Créer un compte (éleveur ou vétérinaire)
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/RegisterBody' } } }
+      responses:
+        '201': { description: Compte créé, content: { application/json: { schema: { $ref: '#/components/schemas/AuthResult' } } } }
+        '409': { description: phone_taken, email_taken ou order_number_taken, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '422': { $ref: '#/components/responses/Error' }
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Connexion par e-mail ou téléphone et mot de passe
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [identifier, password], properties: { identifier: { type: string, example: '07 12 34 56 78' }, password: { type: string } } } } }
+      responses:
+        '200': { description: Connecté, content: { application/json: { schema: { $ref: '#/components/schemas/AuthResult' } } } }
+        '401': { description: invalid_credentials, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '429': { description: account_locked (en-tête Retry-After), content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /auth/pin-login:
+    post:
+      tags: [Auth]
+      summary: Connexion du mode simple (éleveur) par code à 4 chiffres
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [pin], description: 'userId OU phone', properties: { userId: { type: string, format: uuid }, phone: { type: string }, pin: { type: string, pattern: '^[0-9]{4}$' } } } } }
+      responses:
+        '200': { description: Connecté, content: { application/json: { schema: { $ref: '#/components/schemas/AuthResult' } } } }
+        '401': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Renouveler les jetons (le jeton de renouvellement ne sert qu'une fois)
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [refreshToken], properties: { refreshToken: { type: string } } } } }
+      responses:
+        '200': { description: Nouveaux jetons, content: { application/json: { schema: { $ref: '#/components/schemas/AuthResult' } } } }
+        '401': { description: invalid_refresh ou refresh_reuse (session révoquée), content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Fermer la session
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [refreshToken], properties: { refreshToken: { type: string } } } } }
+      responses:
+        '204': { description: Session fermée }
+  /auth/change-password:
+    post:
+      tags: [Auth]
+      summary: Changer de mot de passe (ferme toutes les sessions)
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [currentPassword, newPassword], properties: { currentPassword: { type: string }, newPassword: { type: string, minLength: 8 } } } } }
+      responses:
+        '204': { description: Modifié }
+        '401': { $ref: '#/components/responses/Error' }
+  /auth/pin:
+    post:
+      tags: [Auth]
+      summary: Définir le code à 4 chiffres (éleveur)
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [password, pin], properties: { password: { type: string }, pin: { type: string, pattern: '^[0-9]{4}$' } } } } }
+      responses:
+        '204': { description: Modifié }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /me:
+    get:
+      tags: [Profil]
+      summary: Mon profil
+      security: [{ bearer: [] }]
+      responses:
+        '200': { description: Profil, content: { application/json: { schema: { $ref: '#/components/schemas/User' } } } }
+        '401': { $ref: '#/components/responses/Error' }
+    patch:
+      tags: [Profil]
+      summary: Modifier mon profil
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/UpdateMeBody' } } }
+      responses:
+        '200': { description: Profil mis à jour, content: { application/json: { schema: { $ref: '#/components/schemas/User' } } } }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /animals:
+    get:
+      tags: [Animaux]
+      summary: Liste des animaux visibles par l'utilisateur
+      description: Éleveur = ses animaux ; vétérinaire = accès en cours ; agent = sa zone ; autorité = tout.
+      security: [{ bearer: [] }]
+      parameters:
+        - { name: q, in: query, schema: { type: string }, description: 'Nom, code, boucle ou race' }
+        - { name: species, in: query, schema: { $ref: '#/components/schemas/Species' } }
+        - { name: kind, in: query, schema: { type: string, enum: [individual, lot] } }
+        - { name: status, in: query, schema: { type: string, enum: [actif, vendu, abattu, decede, vole] } }
+        - { name: zoneId, in: query, schema: { type: string, format: uuid } }
+        - { name: sort, in: query, schema: { type: string, enum: [name, created, born, species], default: created } }
+        - { name: order, in: query, schema: { type: string, enum: [asc, desc], default: desc } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200':
+          description: Page de résultats
+          content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/Animal' } }, total: { type: integer }, page: { type: integer }, limit: { type: integer } } } } }
+        '422': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [Animaux]
+      summary: Créer un animal ou un lot (éleveur)
+      description: |
+        Bovin, ovin, caprin : un par un. Volaille, lapin, poisson : en lot. Porcin : les deux.
+        Un lot a un effectif ; une boucle RFID n'existe que pour un animal seul.
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/CreateAnimalBody' } } }
+      responses:
+        '201': { description: Créé, content: { application/json: { schema: { $ref: '#/components/schemas/Animal' } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { description: rfid_taken, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '422': { $ref: '#/components/responses/Error' }
+  /animals/lookup:
+    get:
+      tags: [Animaux]
+      summary: Scanner un QR (code) ou une boucle RFID
+      description: Renvoie une carte publique minimale ; `access` indique le droit de l'utilisateur sur le dossier complet (null = aucun).
+      security: [{ bearer: [] }]
+      parameters:
+        - { name: code, in: query, schema: { type: string, example: CI-BOV-00431 } }
+        - { name: rfid, in: query, schema: { type: string, example: 0A1B2C3D4E5F } }
+      responses:
+        '200': { description: Carte publique, content: { application/json: { schema: { $ref: '#/components/schemas/AnimalCard' } } } }
+        '404': { description: animal_not_found, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '422': { $ref: '#/components/responses/Error' }
+  /animals/{id}:
+    get:
+      tags: [Animaux]
+      summary: Fiche d'un animal
+      description: 404 si l'animal n'existe pas ou n'est pas visible par l'utilisateur.
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/AnimalId' }]
+      responses:
+        '200': { description: Fiche, content: { application/json: { schema: { $ref: '#/components/schemas/AnimalDetail' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+    patch:
+      tags: [Animaux]
+      summary: Modifier une fiche (propriétaire)
+      description: Code, propriétaire, statut et effectif ne se modifient pas ici. La boucle RFID se pose une fois. 423 si l'animal est déclaré volé.
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/AnimalId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/UpdateAnimalBody' } } }
+      responses:
+        '200': { description: Fiche mise à jour, content: { application/json: { schema: { $ref: '#/components/schemas/Animal' } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { description: rfid_taken ou rfid_immutable, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '423': { description: animal_locked, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '422': { $ref: '#/components/responses/Error' }
+  /animals/{id}/photos:
+    post:
+      tags: [Animaux]
+      summary: Ajouter une photo (10 au maximum)
+      description: L'envoi de fichier n'est pas encore branché ; on enregistre l'adresse d'une photo déjà hébergée (https:// ou /uploads/…).
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/AnimalId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [url], properties: { url: { type: string } } } } }
+      responses:
+        '201': { description: Ajoutée, content: { application/json: { schema: { $ref: '#/components/schemas/Photo' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { description: photo_limit, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '423': { $ref: '#/components/responses/Error' }
+  /animals/{id}/photos/{photoId}:
+    delete:
+      tags: [Animaux]
+      summary: Supprimer une photo
+      security: [{ bearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/AnimalId' }
+        - { name: photoId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Supprimée }
+        '404': { $ref: '#/components/responses/Error' }
+  /access/scan:
+    post:
+      tags: [Accès vétérinaire]
+      summary: Scanner un animal pour obtenir (ou prolonger) 30 jours d'accès (vétérinaire vérifié)
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, description: 'code OU rfid', properties: { code: { type: string }, rfid: { type: string } } } } }
+      responses:
+        '200': { description: Accès accordé ou prolongé, content: { application/json: { schema: { type: object, properties: { animalId: { type: string, format: uuid }, stolen: { type: boolean }, created: { type: boolean }, expiresOn: { type: string, format: date } } } } } }
+        '403': { description: forbidden ou vet_not_verified, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '404': { description: animal_not_found, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /access:
+    get:
+      tags: [Accès vétérinaire]
+      summary: Mes accès en cours (vétérinaire)
+      security: [{ bearer: [] }]
+      responses:
+        '200': { description: Liste, content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { type: object, properties: { animal: { $ref: '#/components/schemas/AnimalCard' }, source: { type: string }, expiresOn: { type: string, format: date } } } } } } } } }
+  /animals/{id}/access:
+    get:
+      tags: [Accès vétérinaire]
+      summary: Qui a accès à cet animal (propriétaire, autorité)
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/AnimalId' }]
+      responses:
+        '200': { description: Liste, content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/Grant' } } } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [Accès vétérinaire]
+      summary: Donner l'accès à un vétérinaire vérifié (propriétaire)
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/AnimalId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [vetId], properties: { vetId: { type: string, format: uuid } } } } }
+      responses:
+        '201': { description: Accès donné, content: { application/json: { schema: { type: object, properties: { animalId: { type: string }, vetId: { type: string }, expiresOn: { type: string, format: date }, created: { type: boolean } } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /animals/{id}/access/{vetId}:
+    delete:
+      tags: [Accès vétérinaire]
+      summary: Retirer l'accès (l'historique déjà écrit reste)
+      security: [{ bearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/AnimalId' }
+        - { name: vetId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Retiré }
+        '404': { $ref: '#/components/responses/Error' }
+  /animals/{id}/health-events:
+    get:
+      tags: [Santé]
+      summary: Historique de santé (acte le plus récent d'abord)
+      security: [{ bearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/AnimalId' }
+        - { name: type, in: query, schema: { type: string, enum: [vaccin, soin, controle] } }
+      responses:
+        '200': { description: Actes, content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/HealthEvent' } } } } } } }
+        '404': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [Santé]
+      summary: Ajouter un acte (propriétaire ou vétérinaire avec accès)
+      description: |
+        L'historique est en ajout seul : il n'existe ni modification ni suppression.
+        Une erreur se corrige par un nouvel acte avec `correctsEventId` (une seule correction par version).
+        Un acte posé par un vétérinaire est signé par lui et prolonge son accès de 30 jours.
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/AnimalId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/CreateEventBody' } } }
+      responses:
+        '201': { description: Acte ajouté, content: { application/json: { schema: { $ref: '#/components/schemas/HealthEvent' } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { description: already_corrected, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '422': { $ref: '#/components/responses/Error' }
+        '423': { description: animal_locked (animal volé), content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /animals/{id}/health-summary:
+    get:
+      tags: [Santé]
+      summary: Délai d'attente avant vente, prochains rappels, dernier acte
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/AnimalId' }]
+      responses:
+        '200': { description: Résumé, content: { application/json: { schema: { $ref: '#/components/schemas/HealthSummary' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+  /reminders:
+    get:
+      tags: [Santé]
+      summary: Calendrier des rappels (en retard ou à venir) sur mes animaux visibles
+      security: [{ bearer: [] }]
+      parameters:
+        - { name: days, in: query, schema: { type: integer, minimum: 0, maximum: 365, default: 30 } }
+      responses:
+        '200': { description: Rappels triés par date, content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/Reminder' } } } } } } }
+  /animals/{id}/mortality:
+    post:
+      tags: [Santé]
+      summary: "Déclarer des morts (lot : retire de l'effectif ; animal seul : passe en « decede »)"
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/AnimalId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [qty], properties: { qty: { type: integer, minimum: 1 }, cause: { type: string }, occurredOn: { type: string, format: date }, note: { type: string } } } } }
+      responses:
+        '201': { description: Enregistré, content: { application/json: { schema: { type: object, properties: { animalId: { type: string }, deaths: { type: integer }, qty: { type: integer, nullable: true }, remaining: { type: integer, nullable: true }, status: { type: string } } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { description: qty_exceeds_stock ou animal_not_active, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '423': { $ref: '#/components/responses/Error' }
+  /animals/{id}/cases:
+    get:
+      tags: [Santé]
+      summary: Signalements de maladie
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/AnimalId' }]
+      responses:
+        '200': { description: Liste, content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/Case' } } } } } } }
+    post:
+      tags: [Santé]
+      summary: Signaler une maladie (les morts éventuelles sortent de l'effectif)
+      description: '`notifiable` vaut true pour une maladie à déclaration obligatoire (le lot 4 en tire une alerte).'
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/AnimalId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/CreateCaseBody' } } }
+      responses:
+        '201': { description: Signalement ouvert, content: { application/json: { schema: { $ref: '#/components/schemas/Case' } } } }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '423': { $ref: '#/components/responses/Error' }
+  /cases/{caseId}:
+    patch:
+      tags: [Santé]
+      summary: Faire avancer un signalement (ouvert → suivi → guéri → clos)
+      security: [{ bearer: [] }]
+      parameters:
+        - { name: caseId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, minProperties: 1, properties: { status: { type: string, enum: [suivi, gueri, clos] }, note: { type: string } } } } }
+      responses:
+        '200': { description: Mis à jour, content: { application/json: { schema: { $ref: '#/components/schemas/Case' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { description: invalid_transition, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /animals/{id}/flows:
+    get:
+      tags: [Mouvements]
+      summary: Historique des mouvements (entrées, ventes, mortalité, vol, abattage…)
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/AnimalId' }]
+      responses:
+        '200': { description: Mouvements, content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/Flow' } } } } } } }
+        '404': { $ref: '#/components/responses/Error' }
+  /animals/{id}/sale:
+    post:
+      tags: [Mouvements]
+      summary: Vendre (tout ou partie d'un lot) ; avec buyerId, la propriété est transférée
+      description: L'historique de santé suit l'animal (RG3) ; les accès vétérinaires sont retirés.
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/AnimalId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/SaleBody' } } }
+      responses:
+        '201': { description: Enregistré, content: { application/json: { schema: { type: object, properties: { animalId: { type: string }, sold: { type: integer }, status: { type: string }, qty: { type: integer, nullable: true }, ownerId: { type: string }, transferId: { type: string, nullable: true } } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { description: "withdrawal_active (délai d'attente, RG6), animal_not_active ou qty_exceeds_stock", content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '423': { description: "animal_locked : animal volé (RG4)", content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '422': { $ref: '#/components/responses/Error' }
+  /animals/{id}/slaughter:
+    post:
+      tags: [Mouvements]
+      summary: Déclarer un abattage
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/AnimalId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/SlaughterBody' } } }
+      responses:
+        '201': { description: Enregistré, content: { application/json: { schema: { type: object, properties: { animalId: { type: string }, slaughtered: { type: integer }, status: { type: string }, qty: { type: integer, nullable: true } } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { description: "withdrawal_active, animal_not_active ou qty_exceeds_stock", content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '423': { description: "animal_locked", content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /animals/{id}/transfer:
+    post:
+      tags: [Mouvements]
+      summary: Transférer la propriété à un autre éleveur
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/AnimalId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/TransferBody' } } }
+      responses:
+        '201': { description: Enregistré, content: { application/json: { schema: { type: object, properties: { animalId: { type: string }, transferId: { type: string }, ownerId: { type: string } } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { description: "animal_not_active", content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '423': { description: "animal_locked", content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '422': { $ref: '#/components/responses/Error' }
+  /animals/{id}/theft:
+    post:
+      tags: [Mouvements]
+      summary: "Déclarer un vol : la fiche est bloquée et une alerte haute est créée (RG4)"
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/AnimalId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/TheftBody' } } }
+      responses:
+        '201': { description: Enregistré, content: { application/json: { schema: { type: object, properties: { animalId: { type: string }, status: { type: string }, alertId: { type: string } } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { description: "animal_not_active", content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '423': { description: "animal_locked", content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /animals/{id}/recovery:
+    post:
+      tags: [Mouvements]
+      summary: "Animal retrouvé (propriétaire, agent de la zone ou autorité) : lève le blocage"
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/AnimalId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        content: { application/json: { schema: { type: object, properties: { note: { type: string } } } } }
+      responses:
+        '200': { description: Débloqué, content: { application/json: { schema: { type: object, properties: { animalId: { type: string }, status: { type: string } } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { description: "not_stolen", content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /animals/{id}/listing:
+    post:
+      tags: [Marché]
+      summary: Mettre en vente (refusé pendant un délai d'attente)
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/AnimalId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ListingBody' } } }
+      responses:
+        '201': { description: En vente, content: { application/json: { schema: { type: object, properties: { animalId: { type: string }, price: { type: integer }, listed: { type: boolean } } } } } }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { description: "withdrawal_active ou animal_not_active", content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '423': { description: "animal_locked", content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    delete:
+      tags: [Marché]
+      summary: Retirer l'annonce
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/AnimalId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '204': { description: Retirée }
+        '404': { $ref: '#/components/responses/Error' }
+  /market:
+    get:
+      tags: [Marché]
+      summary: Annonces (animaux actifs, non volés, sans délai d'attente ; sans boucle ni coordonnées)
+      security: [{ bearer: [] }]
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: species, in: query, schema: { $ref: '#/components/schemas/Species' } }
+        - { name: zoneId, in: query, schema: { type: string, format: uuid } }
+        - { name: minPrice, in: query, schema: { type: integer } }
+        - { name: maxPrice, in: query, schema: { type: integer } }
+        - { name: sort, in: query, schema: { type: string, enum: [price, listed], default: listed } }
+        - { name: order, in: query, schema: { type: string, enum: [asc, desc], default: desc } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: limit, in: query, schema: { type: integer, maximum: 50, default: 20 } }
+      responses:
+        '200': { description: Page d'annonces, content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/MarketItem' } }, total: { type: integer }, page: { type: integer }, limit: { type: integer } } } } } }
+  /alerts:
+    get:
+      tags: [Alertes]
+      summary: "Alertes visibles (autorité : toutes ; agent : sa zone ; éleveur et vétérinaire : alertes sanitaires de leur zone et celles de leurs animaux)"
+      description: Les alertes non traitées et les plus graves viennent d'abord. L'animal n'est révélé qu'à l'autorité, aux agents et au propriétaire.
+      security: [{ bearer: [] }]
+      parameters:
+        - { name: kind, in: query, schema: { type: string, enum: [vol, sanitaire, anomalie] } }
+        - { name: handled, in: query, schema: { type: string, enum: ['true', 'false'] } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: limit, in: query, schema: { type: integer, maximum: 100, default: 20 } }
+      responses:
+        '200': { description: Page d'alertes, content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/Alert' } }, total: { type: integer }, page: { type: integer }, limit: { type: integer } } } } } }
+  /alerts/{id}/handle:
+    patch:
+      tags: [Alertes]
+      summary: Prendre en charge une alerte (agent de la zone ou autorité)
+      security: [{ bearer: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      responses:
+        '200': { description: Prise en charge, content: { application/json: { schema: { $ref: '#/components/schemas/Alert' } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { description: "already_handled", content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /agent/overview:
+    get:
+      tags: [Alertes]
+      summary: Tableau de bord de l'agent de terrain (sa zone)
+      security: [{ bearer: [] }]
+      responses:
+        '200': { description: Résumé, content: { application/json: { schema: { type: object, properties: { zone: { type: object, nullable: true, properties: { id: { type: string }, name: { type: string } } }, animals: { type: integer }, heads: { type: integer }, openCases: { type: integer }, stolen: { type: integer }, unhandledAlerts: { type: integer } } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+  /sync:
+    post:
+      tags: [Synchronisation]
+      summary: Envoi groupé des écritures faites hors-ligne (100 opérations au plus)
+      description: |
+        Chaque opération porte un `clientId` (UUID généré sur le téléphone). Une opération déjà réussie est rejouée sans effet (`replayed: true`).
+        Les opérations sont traitées dans l'ordre ; une erreur n'arrête pas les suivantes et n'est pas mémorisée.
+        Un identifiant d'animal peut être `ref:<clientId>` : l'objet créé plus tôt dans le même envoi ou un envoi précédent.
+        Types : animal.create, animal.update (avec `baseUpdatedAt` pour détecter un conflit : `conflict_stale`), health.create, mortality.declare, case.create, case.update, sale, theft.declare.
+        Le `payload` est le corps de la route équivalente, avec `animalId` (ou `caseId`) en plus.
+      security: [{ bearer: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/SyncBatch' } } }
+      responses:
+        '200': { description: Résultat de chaque opération, dans l'ordre, content: { application/json: { schema: { type: object, properties: { results: { type: array, items: { $ref: '#/components/schemas/SyncResult' } } } } } } }
+        '422': { $ref: '#/components/responses/Error' }
+  /sync/pull:
+    get:
+      tags: [Synchronisation]
+      summary: Changements depuis une date (animaux, actes, signalements visibles)
+      description: Garder `serverTime` pour l'appel suivant. Un changement peut être renvoyé deux fois (à traiter comme une mise à jour). Si `hasMore`, rappeler avec le dernier `since`.
+      security: [{ bearer: [] }]
+      parameters:
+        - { name: since, in: query, schema: { type: string, format: date-time } }
+      responses:
+        '200': { description: Changements, content: { application/json: { schema: { $ref: '#/components/schemas/PullResult' } } } }
+        '422': { $ref: '#/components/responses/Error' }
+  /stats/overview:
+    get:
+      tags: [Indicateurs]
+      summary: "Indicateurs (autorité : national ; agent : sa zone)"
+      security: [{ bearer: [] }]
+      responses:
+        '200': { description: Indicateurs, content: { application/json: { schema: { $ref: '#/components/schemas/StatsOverview' } } } }
+        '403': { $ref: '#/components/responses/Error' }
+  /stats/zones:
+    get:
+      tags: [Indicateurs]
+      summary: Indicateurs par zone, avec taux de mortalité sur 30 jours
+      security: [{ bearer: [] }]
+      responses:
+        '200': { description: Zones, content: { application/json: { schema: { type: object, properties: { periodDays: { type: integer }, items: { type: array, items: { $ref: '#/components/schemas/ZoneStats' } } } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+  /export/animals.csv:
+    get:
+      tags: [Indicateurs]
+      summary: Export CSV des animaux visibles (10 000 lignes au plus)
+      description: Séparateur « ; », BOM UTF-8 (Excel). Les cellules qui commencent par = + - @ sont neutralisées contre l'injection de formules.
+      security: [{ bearer: [] }]
+      responses:
+        '200': { description: Fichier CSV, content: { text/csv: { schema: { type: string } } } }
+  /export/cases.csv:
+    get:
+      tags: [Indicateurs]
+      summary: Export CSV des signalements de maladie visibles
+      description: Séparateur « ; », BOM UTF-8 (Excel). Les cellules qui commencent par = + - @ sont neutralisées contre l'injection de formules.
+      security: [{ bearer: [] }]
+      responses:
+        '200': { description: Fichier CSV, content: { text/csv: { schema: { type: string } } } }
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    AnimalId: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Identifiant unique (8 à 100 caractères) pour rejouer la requête sans effet double.
+      schema: { type: string, minLength: 8, maxLength: 100 }
+  responses:
+    Error:
+      description: Erreur
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+  schemas:
+    Flow:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string, enum: [entree, mortalite, vente, vol, abattage, pesee, identification] }
+        qty: { type: integer, nullable: true }
+        counterpart: { type: string, nullable: true }
+        note: { type: string, nullable: true }
+        occurredOn: { type: string, format: date }
+        recordedBy: { type: object, properties: { id: { type: string }, name: { type: string } } }
+        createdAt: { type: string, format: date-time }
+    SaleBody:
+      type: object
+      properties:
+        qty: { type: integer, minimum: 1, description: "Lot : par défaut tout le reste" }
+        buyerId: { type: string, format: uuid, description: "Éleveur inscrit : transfert de propriété (animal seul ou lot entier)" }
+        counterpart: { type: string, description: "Nom de l'acheteur si non inscrit" }
+        price: { type: integer, minimum: 0, description: FCFA }
+        occurredOn: { type: string, format: date }
+    SlaughterBody:
+      type: object
+      properties:
+        qty: { type: integer, minimum: 1 }
+        occurredOn: { type: string, format: date }
+        note: { type: string }
+    TransferBody:
+      type: object
+      required: [toUserId]
+      properties:
+        toUserId: { type: string, format: uuid }
+        occurredOn: { type: string, format: date }
+        note: { type: string }
+    TheftBody:
+      type: object
+      properties:
+        occurredOn: { type: string, format: date }
+        note: { type: string }
+    ListingBody:
+      type: object
+      required: [price]
+      properties: { price: { type: integer, minimum: 0, description: FCFA } }
+    MarketItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string }
+        species: { $ref: '#/components/schemas/Species' }
+        kind: { type: string, enum: [individual, lot] }
+        name: { type: string }
+        breed: { type: string, nullable: true }
+        sex: { type: string, nullable: true }
+        qty: { type: integer, nullable: true }
+        avgWeightKg: { type: number, nullable: true }
+        price: { type: integer }
+        listedAt: { type: string, format: date-time }
+        zone: { type: string }
+        ownerName: { type: string }
+        photoUrl: { type: string, nullable: true }
+    Alert:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [vol, sanitaire, anomalie] }
+        severity: { type: string, enum: [haute, moyenne, basse] }
+        zone: { type: object, nullable: true, properties: { id: { type: string }, name: { type: string } } }
+        animal: { type: object, nullable: true, properties: { id: { type: string }, code: { type: string }, name: { type: string } } }
+        title: { type: string }
+        why: { type: string, nullable: true }
+        createdOn: { type: string, format: date }
+        handled: { type: boolean }
+        handledBy: { type: string, nullable: true }
+        handledAt: { type: string, format: date-time, nullable: true }
+    SyncBatch:
+      type: object
+      required: [ops]
+      properties:
+        ops:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: object
+            required: [clientId, type, payload]
+            properties:
+              clientId: { type: string, format: uuid }
+              type: { type: string, enum: [animal.create, animal.update, health.create, mortality.declare, case.create, case.update, sale, theft.declare] }
+              payload: { type: object, additionalProperties: true }
+    SyncResult:
+      type: object
+      properties:
+        clientId: { type: string, format: uuid }
+        status: { type: string, enum: [ok, error] }
+        replayed: { type: boolean }
+        result: { type: object, additionalProperties: true, description: "Souvent { id } ; pour animal.create : { id, code }" }
+        error:
+          type: object
+          properties: { code: { type: string }, message: { type: string }, status: { type: integer }, details: {} }
+    PullResult:
+      type: object
+      properties:
+        serverTime: { type: string, format: date-time }
+        hasMore: { type: boolean }
+        animals: { type: array, items: { $ref: '#/components/schemas/Animal' } }
+        healthEvents: { type: array, items: { $ref: '#/components/schemas/HealthEvent' } }
+        cases: { type: array, items: { $ref: '#/components/schemas/Case' } }
+    StatsOverview:
+      type: object
+      properties:
+        scope: { type: string, enum: [national, zone] }
+        periodDays: { type: integer }
+        animalsByStatus: { type: array, items: { type: object, properties: { status: { type: string }, animals: { type: integer }, heads: { type: integer } } } }
+        activeBySpecies: { type: array, items: { type: object, properties: { species: { type: string }, animals: { type: integer }, heads: { type: integer } } } }
+        topDiseases: { type: array, items: { type: object, properties: { disease: { type: string }, cases: { type: integer }, notifiable: { type: boolean } } } }
+        openCases: { type: integer }
+        deaths: { type: integer, description: "Sur la période" }
+        unhandledAlerts: { type: object, additionalProperties: { type: integer } }
+        vets: { type: object, properties: { total: { type: integer }, verified: { type: integer } } }
+    ZoneStats:
+      type: object
+      properties:
+        zone: { $ref: '#/components/schemas/Zone' }
+        animals: { type: integer }
+        heads: { type: integer }
+        openCases: { type: integer }
+        deaths: { type: integer }
+        mortalityRate: { type: number }
+        stolen: { type: integer }
+        unhandledAlerts: { type: integer }
+    Grant:
+      type: object
+      properties:
+        animalId: { type: string, format: uuid }
+        vetId: { type: string, format: uuid }
+        vetName: { type: string }
+        source: { type: string, enum: [scan, soin, invitation, enregistrement] }
+        grantedOn: { type: string, format: date }
+        expiresOn: { type: string, format: date }
+        revokedOn: { type: string, format: date, nullable: true }
+        active: { type: boolean }
+    HealthEvent:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        animalId: { type: string, format: uuid }
+        type: { type: string, enum: [vaccin, soin, controle] }
+        label: { type: string }
+        doneOn: { type: string, format: date }
+        nextDueOn: { type: string, format: date, nullable: true }
+        withdrawalDays: { type: integer, nullable: true }
+        withdrawalUntil: { type: string, format: date, nullable: true }
+        note: { type: string, nullable: true }
+        recordedBy: { type: object, properties: { id: { type: string }, name: { type: string }, role: { type: string } } }
+        vet: { type: object, nullable: true, properties: { id: { type: string }, name: { type: string } } }
+        signedByVet: { type: boolean }
+        correctsEventId: { type: string, format: uuid, nullable: true }
+        correctedBy: { type: string, format: uuid, nullable: true, description: "Identifiant de l'acte qui corrige celui-ci" }
+        createdAt: { type: string, format: date-time }
+    CreateEventBody:
+      type: object
+      required: [type, label, doneOn]
+      properties:
+        type: { type: string, enum: [vaccin, soin, controle] }
+        label: { type: string }
+        doneOn: { type: string, format: date, description: 'Pas dans le futur' }
+        nextDueOn: { type: string, format: date, description: 'Date de rappel, après doneOn' }
+        withdrawalDays: { type: integer, minimum: 0, maximum: 365, description: 'Délai avant vente ou abattage' }
+        note: { type: string }
+        correctsEventId: { type: string, format: uuid }
+    HealthSummary:
+      type: object
+      properties:
+        withdrawalUntil: { type: string, format: date, nullable: true }
+        canSell: { type: boolean }
+        upcoming: { type: array, items: { type: object, properties: { label: { type: string }, type: { type: string }, nextDueOn: { type: string, format: date }, overdue: { type: boolean } } } }
+        lastEvent: { allOf: [{ $ref: '#/components/schemas/HealthEvent' }], nullable: true }
+    Reminder:
+      type: object
+      properties:
+        eventId: { type: string, format: uuid }
+        animal: { type: object, properties: { id: { type: string }, code: { type: string }, name: { type: string } } }
+        type: { type: string }
+        label: { type: string }
+        dueOn: { type: string, format: date }
+        overdue: { type: boolean }
+    Case:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        animalId: { type: string, format: uuid }
+        diseases: { type: array, items: { type: string } }
+        notifiable: { type: boolean }
+        affectedCount: { type: integer }
+        severity: { type: string, enum: [legere, moyenne, grave] }
+        symptoms: { type: array, items: { type: string } }
+        deaths: { type: integer }
+        status: { type: string, enum: [ouvert, suivi, gueri, clos] }
+        note: { type: string, nullable: true }
+        openedOn: { type: string, format: date }
+        closedOn: { type: string, format: date, nullable: true }
+        openedBy: { type: object, properties: { id: { type: string }, name: { type: string } } }
+    CreateCaseBody:
+      type: object
+      required: [diseases, affectedCount, severity]
+      properties:
+        diseases: { type: array, minItems: 1, maxItems: 5, items: { type: string } }
+        affectedCount: { type: integer, minimum: 1, description: 'Animal seul : 1. Lot : au plus l''effectif restant.' }
+        severity: { type: string, enum: [legere, moyenne, grave] }
+        symptoms: { type: array, items: { type: string } }
+        deaths: { type: integer, minimum: 0, description: 'Sortent de l''effectif du lot' }
+        note: { type: string }
+    Species: { type: string, enum: [bovin, ovin, caprin, porcin, volaille, lapin, poisson] }
+    Photo: { type: object, properties: { id: { type: string, format: uuid }, url: { type: string } } }
+    Animal:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string, example: CI-BOV-00431 }
+        kind: { type: string, enum: [individual, lot] }
+        species: { $ref: '#/components/schemas/Species' }
+        breed: { type: string, nullable: true }
+        name: { type: string }
+        sex: { type: string, enum: [M, F], nullable: true }
+        bornOn: { type: string, format: date, nullable: true }
+        status: { type: string, enum: [actif, vendu, abattu, decede, vole] }
+        qty: { type: integer, nullable: true, description: 'Effectif actuel (lot)' }
+        qtyInitial: { type: integer, nullable: true }
+        avgWeightKg: { type: number, nullable: true }
+        rfid: { type: string, nullable: true }
+        zone: { type: object, properties: { id: { type: string }, name: { type: string } } }
+        owner: { type: object, properties: { id: { type: string }, name: { type: string } } }
+        photos: { type: array, items: { $ref: '#/components/schemas/Photo' } }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    AnimalDetail:
+      allOf:
+        - { $ref: '#/components/schemas/Animal' }
+        - { type: object, properties: { access: { type: string, enum: [owner, vet, agent, autorite] } } }
+    AnimalCard:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string }
+        species: { $ref: '#/components/schemas/Species' }
+        kind: { type: string, enum: [individual, lot] }
+        name: { type: string }
+        status: { type: string }
+        zone: { type: string }
+        ownerName: { type: string }
+        stolen: { type: boolean }
+        access: { type: string, enum: [owner, vet, agent, autorite], nullable: true }
+    CreateAnimalBody:
+      type: object
+      required: [species, kind, name]
+      properties:
+        species: { $ref: '#/components/schemas/Species' }
+        kind: { type: string, enum: [individual, lot] }
+        name: { type: string }
+        breed: { type: string }
+        sex: { type: string, enum: [M, F] }
+        bornOn: { type: string, format: date }
+        qty: { type: integer, minimum: 1, description: 'Obligatoire pour un lot' }
+        avgWeightKg: { type: number }
+        rfid: { type: string, pattern: '^[0-9A-Fa-f]{10,24}$', description: 'Animal seul uniquement' }
+        zoneId: { type: string, format: uuid, description: 'Par défaut : zone du profil' }
+        photoUrl: { type: string }
+    UpdateAnimalBody:
+      type: object
+      minProperties: 1
+      properties:
+        name: { type: string }
+        breed: { type: string, nullable: true }
+        sex: { type: string, enum: [M, F], nullable: true }
+        bornOn: { type: string, format: date, nullable: true }
+        avgWeightKg: { type: number, nullable: true }
+        rfid: { type: string }
+        zoneId: { type: string, format: uuid }
+    Error:
+      type: object
+      required: [code, message]
+      properties: { code: { type: string, example: validation_error }, message: { type: string }, details: {} }
+    Zone:
+      type: object
+      properties: { id: { type: string, format: uuid }, name: { type: string }, lat: { type: number, nullable: true }, lng: { type: number, nullable: true } }
+    VetSummary:
+      type: object
+      properties: { id: { type: string, format: uuid }, name: { type: string }, phone: { type: string }, zone: { type: string, nullable: true }, clinic: { type: string, nullable: true }, orderNumber: { type: string } }
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        role: { type: string, enum: [eleveur, vet, agent, autorite] }
+        name: { type: string }
+        phone: { type: string, example: '0712345678' }
+        email: { type: string, nullable: true }
+        zone: { type: object, nullable: true, properties: { id: { type: string }, name: { type: string } } }
+        photoUrl: { type: string, nullable: true }
+        vet: { type: object, nullable: true, properties: { orderNumber: { type: string }, clinic: { type: string, nullable: true }, verified: { type: boolean } } }
+        prefs: { type: object, additionalProperties: true }
+        createdAt: { type: string, format: date-time }
+    AuthResult:
+      type: object
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        tokenType: { type: string, enum: [Bearer] }
+        expiresIn: { type: integer, example: 900 }
+        user: { $ref: '#/components/schemas/User' }
+    RegisterBody:
+      type: object
+      required: [role, name, phone, password]
+      properties:
+        role: { type: string, enum: [eleveur, vet] }
+        name: { type: string }
+        phone: { type: string }
+        email: { type: string }
+        password: { type: string, minLength: 8 }
+        pin: { type: string, pattern: '^[0-9]{4}$' }
+        zoneId: { type: string, format: uuid }
+        orderNumber: { type: string, description: 'Obligatoire pour un vétérinaire' }
+        clinic: { type: string }
+    UpdateMeBody:
+      type: object
+      minProperties: 1
+      properties:
+        name: { type: string }
+        phone: { type: string }
+        email: { type: string, nullable: true }
+        zoneId: { type: string, format: uuid, nullable: true }
+        prefs: { type: object, additionalProperties: true }

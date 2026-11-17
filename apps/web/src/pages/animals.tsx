@@ -1,0 +1,160 @@
+import { useState } from 'react';
+import { ApiError, api, cachedGet, downloadCsv, qs } from '../api/client';
+import { submitOp } from '../api/offline';
+import type { Animal, Page, Species, Zone } from '../api/types';
+import { Badge, Card, Empty, ErrorBox, Field, Icon, PageHead, Pager, Spinner, useAction, useDebounced, useQuery, useToast } from '../ui/kit';
+import { useAuth } from '../ui/auth';
+import { Link, navigate, useLoc } from '../lib/router';
+import { SPECIES, SPECIES_LIST, STATUS, errorText, headcount, date } from '../lib/format';
+
+export function AnimalRow({ a, showOwner }: { a: Animal; showOwner: boolean }) {
+  return (
+    <li>
+      <Link to={`/animaux/${a.id}`} className="row">
+        <span className="ico" aria-hidden="true">{SPECIES[a.species].icon}</span>
+        <div className="grow">
+          <b>{a.name}</b> <span className="mono mute">{a.code}</span>
+          <br /><span className="mute">{SPECIES[a.species].label}{a.breed ? ` · ${a.breed}` : ''} · {headcount(a)} · {a.zone.name}{showOwner ? ` · ${a.owner.name}` : ''}</span>
+        </div>
+        <Badge tone={STATUS[a.status].tone}>{STATUS[a.status].label}</Badge>
+      </Link>
+    </li>
+  );
+}
+
+export function AnimalsPage() {
+  const { user } = useAuth();
+  const toast = useToast();
+  const { query } = useLoc();
+  const picking = query.get('do') === 'maladie';
+  const [q, setQ] = useState('');
+  const [species, setSpecies] = useState('');
+  const [kind, setKind] = useState('');
+  const [status, setStatus] = useState(user!.role === 'eleveur' ? 'actif' : '');
+  const [sort, setSort] = useState('created');
+  const [order, setOrder] = useState('desc');
+  const [page, setPage] = useState(1);
+  const dq = useDebounced(q);
+  const list = useQuery(
+    () => cachedGet<Page<Animal>>(`/animals${qs({ q: dq, species, kind, status, sort, order, page, limit: 20 })}`, user!.id),
+    [dq, species, kind, status, sort, order, page], { cached: true },
+  );
+  const reset = <T,>(set: (v: T) => void) => (v: T) => { set(v); setPage(1); };
+  const isOwner = user!.role === 'eleveur';
+  const csv = async () => { try { await downloadCsv('/export/animals.csv', 'animaux.csv'); } catch (e) { toast(errorText(e), 'err'); } };
+
+  return (
+    <>
+      <PageHead title={user!.role === 'vet' ? 'Mes accès' : 'Animaux'} sub={list.data ? `${list.data.total} fiche(s)` : undefined}>
+        <button className="btn" onClick={csv}><Icon name="download" /> Exporter (CSV)</button>
+        {isOwner && <Link to="/animaux/nouveau" className="btn pri"><Icon name="plus" /> Nouvel animal</Link>}
+      </PageHead>
+      {picking && <div className="banner info" role="status">Choisissez l'animal malade : vous pourrez décrire ce que vous voyez.</div>}
+      <div className="filters">
+        <div className="search"><Icon name="search" size={18} /><input type="search" aria-label="Rechercher" placeholder="Nom, code, race, boucle…" value={q} onChange={(e) => reset(setQ)(e.target.value)} /></div>
+        <select aria-label="Espèce" value={species} onChange={(e) => reset(setSpecies)(e.target.value)}>
+          <option value="">Toutes les espèces</option>{SPECIES_LIST.map((s) => <option key={s} value={s}>{SPECIES[s].label}</option>)}
+        </select>
+        <select aria-label="Type" value={kind} onChange={(e) => reset(setKind)(e.target.value)}>
+          <option value="">Animaux et lots</option><option value="individual">Animaux seuls</option><option value="lot">Lots</option>
+        </select>
+        <select aria-label="Statut" value={status} onChange={(e) => reset(setStatus)(e.target.value)}>
+          <option value="">Tous les statuts</option>{Object.entries(STATUS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+        </select>
+        <select aria-label="Trier par" value={`${sort}:${order}`} onChange={(e) => { const [s, o] = e.target.value.split(':'); setSort(s!); setOrder(o!); setPage(1); }}>
+          <option value="created:desc">Plus récents</option><option value="created:asc">Plus anciens</option><option value="name:asc">Nom A → Z</option><option value="name:desc">Nom Z → A</option>
+          <option value="born:desc">Naissance récente</option><option value="species:asc">Espèce</option>
+        </select>
+      </div>
+      {list.stale && <div className="banner off">Liste enregistrée le {date(list.stale)} (hors-ligne).</div>}
+      {list.loading && !list.data ? <Spinner /> : list.error && !list.data ? <ErrorBox error={list.error} retry={list.reload} /> : (
+        <Card>
+          {!list.data?.items.length ? (
+            <Empty icon="cow" title="Aucune fiche">{isOwner ? 'Ajoutez votre premier animal ou lot pour commencer son carnet de santé.' : user!.role === 'vet' ? 'Scannez un animal pour obtenir un accès de 30 jours.' : 'Aucun résultat avec ces filtres.'}</Empty>
+          ) : (
+            <ul className="rows">{list.data.items.map((a) => <AnimalRow key={a.id} a={a} showOwner={!isOwner} />)}</ul>
+          )}
+          {list.data && <Pager page={list.data.page} limit={list.data.limit} total={list.data.total} onPage={setPage} />}
+        </Card>
+      )}
+    </>
+  );
+}
+
+export function NewAnimalPage() {
+  const { user } = useAuth();
+  const toast = useToast();
+  const zones = useQuery(() => cachedGet<{ items: Zone[] }>('/zones', 'public'), [], { cached: true });
+  const [f, setF] = useState({ species: 'bovin' as Species, kind: 'individual', name: '', breed: '', sex: '', bornOn: '', qty: '', avgWeightKg: '', rfid: '', zoneId: user!.zone?.id ?? '' });
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const { busy, run } = useAction();
+  const sp = SPECIES[f.species];
+  const kind = sp.single && sp.lot ? f.kind : sp.lot ? 'lot' : 'individual';
+  const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setF((s) => ({ ...s, [k]: e.target.value }));
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault(); setErrors({});
+    const p: Record<string, unknown> = { species: f.species, kind, name: f.name.trim() };
+    if (f.breed.trim()) p.breed = f.breed.trim();
+    if (kind === 'individual' && f.sex) p.sex = f.sex;
+    if (f.bornOn) p.bornOn = f.bornOn;
+    if (kind === 'lot') p.qty = Number(f.qty);
+    if (f.avgWeightKg) p.avgWeightKg = Number(f.avgWeightKg);
+    if (kind === 'individual' && f.rfid.trim()) p.rfid = f.rfid.trim().replace(/\s+/g, '');
+    if (f.zoneId) p.zoneId = f.zoneId;
+    try {
+      const r = await run(async () => {
+        try { return await submitOp('animal.create', p, `Nouvel ${kind === 'lot' ? 'lot' : 'animal'} : ${f.name.trim()}`); }
+        catch (err) {
+          if (err instanceof ApiError && err.status === 422 && Array.isArray(err.details)) {
+            const m: Record<string, string> = {};
+            for (const d of err.details) if (d.path?.[0] && !m[d.path[0]]) m[d.path[0]] = d.message;
+            setErrors(m);
+          }
+          throw err;
+        }
+      });
+      if (!r) return;
+      if (r.queued) { toast('Enregistré sur le téléphone : il sera envoyé au retour du réseau.', 'info'); navigate('/envoi'); }
+      else { toast('Fiche créée', 'ok'); navigate(`/animaux/${r.result!.id}`); }
+    } catch { /* déjà affiché */ }
+  };
+
+  return (
+    <>
+      <PageHead title="Nouvel animal ou lot" sub="Le code QR de la fiche est créé automatiquement." />
+      <form className="card form" onSubmit={submit}>
+        <Field label="Espèce">{(id) => <select id={id} value={f.species} onChange={(e) => setF((s) => ({ ...s, species: e.target.value as Species }))}>{SPECIES_LIST.map((s) => <option key={s} value={s}>{SPECIES[s].icon} {SPECIES[s].label}</option>)}</select>}</Field>
+        {sp.single && sp.lot && (
+          <div className="seg" role="radiogroup" aria-label="Type de fiche">
+            <button type="button" role="radio" aria-selected={kind === 'individual'} onClick={() => setF((s) => ({ ...s, kind: 'individual' }))}>Animal seul</button>
+            <button type="button" role="radio" aria-selected={kind === 'lot'} onClick={() => setF((s) => ({ ...s, kind: 'lot' }))}>Lot</button>
+          </div>
+        )}
+        {!sp.single && <p className="mute">Cette espèce se gère en <b>lot</b> (bande, cage, bassin).</p>}
+        {!sp.lot && <p className="mute">Cette espèce se gère <b>animal par animal</b>.</p>}
+        <Field label={kind === 'lot' ? 'Nom du lot' : "Nom de l'animal"} error={errors.name}>{(id) => <input id={id} value={f.name} onChange={set('name')} required maxLength={80} placeholder={kind === 'lot' ? 'Bande de poulets n°1' : 'Kouadio'} />}</Field>
+        <Field label="Race (facultatif)" error={errors.breed}>{(id) => <input id={id} value={f.breed} onChange={set('breed')} maxLength={80} />}</Field>
+        {kind === 'lot' ? (
+          <Field label="Effectif" hint="Nombre de têtes aujourd'hui." error={errors.qty}>{(id) => <input id={id} type="number" min={1} value={f.qty} onChange={set('qty')} required inputMode="numeric" />}</Field>
+        ) : (
+          <>
+            <Field label="Sexe" error={errors.sex}>{(id) => <select id={id} value={f.sex} onChange={set('sex')}><option value="">—</option><option value="F">Femelle</option><option value="M">Mâle</option></select>}</Field>
+            <Field label="Boucle RFID (facultatif)" hint="10 à 24 caractères, chiffres et lettres A à F." error={errors.rfid}>{(id) => <input id={id} value={f.rfid} onChange={set('rfid')} className="mono" autoCapitalize="characters" />}</Field>
+          </>
+        )}
+        <Field label="Date de naissance (facultatif)" error={errors.bornOn}>{(id) => <input id={id} type="date" value={f.bornOn} max={new Date().toISOString().slice(0, 10)} onChange={set('bornOn')} />}</Field>
+        <Field label="Poids moyen en kg (facultatif)" error={errors.avgWeightKg}>{(id) => <input id={id} type="number" step="0.1" min="0" value={f.avgWeightKg} onChange={set('avgWeightKg')} inputMode="decimal" />}</Field>
+        <Field label="Zone" error={errors.zoneId}>{(id) => (
+          <select id={id} value={f.zoneId} onChange={set('zoneId')} required>
+            <option value="">— Choisir —</option>{zones.data?.items.map((z) => <option key={z.id} value={z.id}>{z.name}</option>)}
+          </select>
+        )}</Field>
+        <div className="actions end">
+          <Link to="/animaux" className="btn">Annuler</Link>
+          <button className="btn pri" disabled={busy}>{busy ? 'Création…' : 'Créer la fiche'}</button>
+        </div>
+      </form>
+    </>
+  );
+}

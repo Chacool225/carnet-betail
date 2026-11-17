@@ -1,0 +1,7 @@
+# Remplacer par les vrais identifiants GitHub. Une PR qui touche un dossier est demandée à son propriétaire.
+/apps/api/            @P1
+/packages/contract/   @P1 @P2 @P3
+/apps/web/src/standard/ @P2
+/apps/web/src/simple/   @P3
+/packages/offline/    @P3
+/packages/insights/   @P3

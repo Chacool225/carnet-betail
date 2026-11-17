@@ -1,0 +1,13 @@
+{
+  "name": "carnet-betail",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Carnet Bétail : carnet de santé numérique du bétail (Hackathon SELAB 2026, thématique 1)",
+  "packageManager": "pnpm@9.15.0",
+  "engines": { "node": ">=20.9" },
+  "scripts": {
+    "dev:api": "pnpm --filter @carnet/api dev",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck"
+  }
+}
