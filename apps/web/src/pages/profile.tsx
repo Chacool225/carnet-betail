@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { api } from '../api/client';
-import type { User, Zone } from '../api/types';
+import type { BuyerProfile, User, Zone } from '../api/types';
+import { BuyerFields, buyerBody, buyerFromProfile, emptyBuyer, type BuyerForm } from '../ui/buyer';
 import { Badge, Card, Field, PageHead, useAction, useQuery, useToast } from '../ui/kit';
 import { useAuth } from '../ui/auth';
 import { ROLE_LABEL, phone } from '../lib/format';
@@ -8,6 +9,36 @@ import { ROLE_LABEL, phone } from '../lib/format';
 export function applyTheme(t?: string): void {
   const r = document.documentElement;
   if (t === 'light' || t === 'dark') r.setAttribute('data-theme', t); else r.removeAttribute('data-theme');
+}
+
+/** Profil d'acheteur : profession et organisation représentée, montrées au vendeur quand on lui fait une demande. */
+function BuyerProfileCard() {
+  const toast = useToast();
+  const { busy, run } = useAction();
+  const [form, setForm] = useState<BuyerForm | null>(null);
+  const [errs, setErrs] = useState<Record<string, string>>({});
+  const q = useQuery(() => api.get<{ profile: BuyerProfile | null }>('/me/buyer-profile'), []);
+  const v = form ?? (q.data ? buyerFromProfile(q.data.profile) : emptyBuyer);
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault(); setErrs({});
+    const r = await run(async () => {
+      try { return await api.put<{ profile: BuyerProfile | null }>('/me/buyer-profile', buyerBody(v)); }
+      catch (err: any) {
+        if (err?.status === 422 && Array.isArray(err.details)) { const m: Record<string, string> = {}; for (const d of err.details) if (d.path?.[0]) m[d.path[0]] = d.message; setErrs(m); }
+        throw err;
+      }
+    }, 'Profil acheteur enregistré');
+    if (r) { setForm(null); q.reload(); toast('Les vendeurs verront ces informations avec vos demandes.', 'info'); }
+  };
+  return (
+    <Card title="Profil acheteur">
+      <form className="form" onSubmit={save}>
+        <p className="mute">Les éleveurs voient ces informations quand vous leur faites une demande. Le numéro du responsable ne leur est transmis qu'après un accord.</p>
+        <BuyerFields value={v} onChange={setForm} errors={errs} />
+        <div className="actions end"><button className="btn pri" disabled={busy || q.loading && !q.data}>Enregistrer</button></div>
+      </form>
+    </Card>
+  );
 }
 
 export function ProfilePage() {
@@ -62,6 +93,7 @@ export function ProfilePage() {
             <div className="actions end"><button className="btn pri" disabled={busy}>Enregistrer</button></div>
           </form>
         </Card>
+        {user!.role === 'particulier' && <BuyerProfileCard />}
         <Card title="Affichage">
           <label className="switch"><input type="checkbox" checked={!!user!.prefs.simple} onChange={(e) => pref({ simple: e.target.checked })} /> <span><b>Mode simple</b><br /><span className="mute">Gros boutons, images, lecture à voix haute, connexion par code à 4 chiffres.</span></span></label>
           <Field label="Thème">{(id) => <select id={id} value={user!.prefs.theme ?? ''} onChange={(e) => pref({ theme: e.target.value || undefined })}><option value="">Automatique</option><option value="light">Clair</option><option value="dark">Sombre</option></select>}</Field>

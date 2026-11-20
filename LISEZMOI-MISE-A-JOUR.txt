@@ -1,0 +1,16 @@
+Mise à jour : vente à l'unité, prix dégressif, négociation, profil acheteur
+============================================================================
+1. Dézipper par-dessus le projet (le .env n'est pas touché).
+2. pnpm install
+3. pnpm --filter @carnet/api migrate      (applique 005_vente_unite_negociation_profil.sql)
+4. pnpm --filter @carnet/api test
+5. pnpm dev:api   puis   pnpm --filter @carnet/web dev
+
+Nouveautés
+- Mise en vente d'un lot par quantité : « 120 volailles sur 150 », prix à l'unité, prix réduit à partir d'un seuil.
+- Demandes d'achat : l'acheteur choisit la quantité ; le prix réduit s'applique automatiquement.
+- Modal de discussion dans « Mes demandes » : chat + propositions (quantité, prix à l'unité) de chaque partie.
+  Quand les deux saisissent la même chose : accord conclu, récapitulatif posté dans le chat, quantité réservée.
+- Vente partielle : l'acheteur reçoit un nouveau lot avec les vaccins déjà faits ; l'éleveur garde le reste.
+- Profil acheteur (particulier) : profession, ou organisation (restaurant, boucherie…, nom, responsable, téléphone, localité).
+  À l'inscription et dans « Profil ». Le vendeur le voit ; le téléphone du responsable seulement après l'accord.

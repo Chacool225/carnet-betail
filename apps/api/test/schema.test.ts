@@ -14,7 +14,7 @@ describe('migrations', () => {
   it('sont rejouables sans effet', async () => {
     expect(await migrate(ctx.db)).toEqual([]);
     const n = (await ctx.db.query('SELECT count(*)::int AS n FROM schema_migrations'))[0]!.n;
-    expect(n).toBe(2);
+    expect(n).toBe(5);
   });
 });
 

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { boolParam, dateParam, rangeCheck } from '../../lib/filters.js';
 
 export const SPECIES = ['bovin', 'ovin', 'caprin', 'porcin', 'volaille', 'lapin', 'poisson'] as const;
 export type Species = (typeof SPECIES)[number];
@@ -64,17 +65,31 @@ export const updateAnimalBody = z
   .refine((v) => Object.keys(v).length > 0, { message: 'Aucun champ à modifier.' });
 export type UpdateAnimalBody = z.infer<typeof updateAnimalBody>;
 
-export const listQuery = z.object({
-  q: z.string().trim().max(80).optional(),
-  species: z.enum(SPECIES).optional(),
-  kind: z.enum(['individual', 'lot']).optional(),
-  status: z.enum(['actif', 'vendu', 'abattu', 'decede', 'vole']).optional(),
-  zoneId: z.string().uuid().optional(),
-  sort: z.enum(['name', 'created', 'born', 'species']).default('created'),
-  order: z.enum(['asc', 'desc']).default('desc'),
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(20),
-});
+export const listQuery = z
+  .object({
+    q: z.string().trim().max(80).optional(),
+    species: z.enum(SPECIES).optional(),
+    kind: z.enum(['individual', 'lot']).optional(),
+    status: z.enum(['actif', 'vendu', 'abattu', 'decede', 'vole']).optional(),
+    zoneId: z.string().uuid().optional(),
+    /** `all` (éleveur) : inclut les animaux sortis du cheptel (vendus, transférés, abattus…), voir GET /animals/:id/archive. */
+    scope: z.enum(['current', 'all']).default('current'),
+    createdFrom: dateParam.optional(),
+    createdTo: dateParam.optional(),
+    bornFrom: dateParam.optional(),
+    bornTo: dateParam.optional(),
+    /** Date de sortie du cheptel (scope=all, éleveur). */
+    exitFrom: dateParam.optional(),
+    exitTo: dateParam.optional(),
+    exited: boolParam.optional(),
+    withdrawal: boolParam.optional(),
+    openCase: boolParam.optional(),
+    sort: z.enum(['name', 'created', 'born', 'species', 'updated', 'exit']).default('created'),
+    order: z.enum(['asc', 'desc']).default('desc'),
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+  })
+  .superRefine(rangeCheck([['createdFrom', 'createdTo'], ['bornFrom', 'bornTo'], ['exitFrom', 'exitTo']]));
 export type ListQuery = z.infer<typeof listQuery>;
 
 export const lookupQuery = z

@@ -7,7 +7,8 @@ import { MORTALITY_ALERT_MIN_STOCK, MORTALITY_ALERT_RATIO, checkOutbreak, create
 import type { AuthContext } from '../../plugins/auth.js';
 import { loadVisible, scopeSql, userZone, type AccessLevel } from '../animals/service.js';
 import { renewIfAny } from '../access/service.js';
-import type { CreateCaseBody, CreateEventBody, MortalityBody, UpdateCaseBody } from './schemas.js';
+import type { CasesQuery, CreateCaseBody, CreateEventBody, EventsQuery, MortalityBody, UpdateCaseBody } from './schemas.js';
+import { escapeLike, pusher } from '../../lib/filters.js';
 
 /** Seuls le propriétaire et un vétérinaire ayant accès écrivent dans le dossier. */
 function assertCanWrite(row: Row, level: AccessLevel): void {
@@ -71,15 +72,21 @@ export async function createEvent(db: Db, auth: AuthContext, animalId: string, b
   });
 }
 
-export async function listEvents(db: Db, auth: AuthContext, animalId: string, type?: string) {
+export async function listEvents(db: Db, auth: AuthContext, animalId: string, f: EventsQuery) {
   await loadVisible(db, auth, animalId);
   const params: unknown[] = [animalId];
-  let where = 'e.animal_id = $1';
-  if (type) {
-    params.push(type);
-    where += ` AND e.type = $${params.length}`;
+  const where = ['e.animal_id = $1'];
+  const p = pusher(params);
+  if (f.type) where.push(`e.type = $${p(f.type)}`);
+  if (f.from) where.push(`e.done_on >= $${p(f.from)}::date`);
+  if (f.to) where.push(`e.done_on <= $${p(f.to)}::date`);
+  if (f.signed !== undefined) where.push(f.signed ? 'e.vet_id IS NOT NULL' : 'e.vet_id IS NULL');
+  if (f.q) {
+    const n = p(`%${escapeLike(f.q)}%`);
+    where.push(`(e.label ILIKE $${n} OR e.note ILIKE $${n} OR r.name ILIKE $${n} OR v.name ILIKE $${n})`);
   }
-  const rows = await db.query(`${EVENT_SELECT} WHERE ${where} ORDER BY e.done_on DESC, e.created_at DESC, e.id`, params);
+  const dir = f.order === 'asc' ? 'ASC' : 'DESC';
+  const rows = await db.query(`${EVENT_SELECT} WHERE ${where.join(' AND ')} ORDER BY e.done_on ${dir}, e.created_at ${dir}, e.id`, params);
   return { items: rows.map(toEvent) };
 }
 
@@ -254,9 +261,20 @@ export async function createCase(db: Db, auth: AuthContext, animalId: string, b:
   });
 }
 
-export async function listCases(db: Db, auth: AuthContext, animalId: string) {
+export async function listCases(db: Db, auth: AuthContext, animalId: string, f: CasesQuery) {
   await loadVisible(db, auth, animalId);
-  const rows = await db.query(`${CASE_SELECT} WHERE c.animal_id = $1 ORDER BY c.opened_on DESC, c.created_at DESC`, [animalId]);
+  const params: unknown[] = [animalId];
+  const where = ['c.animal_id = $1'];
+  const p = pusher(params);
+  if (f.status) where.push(`c.status = $${p(f.status)}`);
+  if (f.from) where.push(`c.opened_on >= $${p(f.from)}::date`);
+  if (f.to) where.push(`c.opened_on <= $${p(f.to)}::date`);
+  if (f.q) {
+    const n = p(`%${escapeLike(f.q)}%`);
+    where.push(`(array_to_string(c.diseases, ' ') ILIKE $${n} OR array_to_string(c.symptoms, ' ') ILIKE $${n} OR c.note ILIKE $${n})`);
+  }
+  const dir = f.order === 'asc' ? 'ASC' : 'DESC';
+  const rows = await db.query(`${CASE_SELECT} WHERE ${where.join(' AND ')} ORDER BY c.opened_on ${dir}, c.created_at ${dir}`, params);
   return { items: rows.map(toCase) };
 }
 

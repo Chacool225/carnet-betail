@@ -11,6 +11,7 @@ import { registerContext } from './plugins/auth.js';
 import { registerErrorHandler } from './plugins/errors.js';
 import { registerIdempotencyHook } from './plugins/idempotency.js';
 import { authRoutes } from './modules/auth/routes.js';
+import { historyRoutes } from './modules/history/routes.js';
 import { meRoutes } from './modules/me/routes.js';
 import { zoneRoutes } from './modules/zones/routes.js';
 import { vetRoutes } from './modules/vets/routes.js';
@@ -21,6 +22,11 @@ import { movementRoutes } from './modules/movements/routes.js';
 import { alertRoutes } from './modules/alerts/routes.js';
 import { syncRoutes } from './modules/sync/routes.js';
 import { statsRoutes } from './modules/stats/routes.js';
+import { purchaseRoutes } from './modules/purchases/routes.js';
+import { buyerRoutes } from './modules/buyers/routes.js';
+import { notificationRoutes } from './modules/notifications/routes.js';
+import { photoRoutes } from './modules/photos/routes.js';
+import { auditRoutes } from './modules/audit/routes.js';
 
 export interface BuildOptions {
   config: Config;
@@ -83,6 +89,12 @@ export async function buildApp({ config, db, logger = false }: BuildOptions): Pr
   await app.register(alertRoutes);
   await app.register(syncRoutes);
   await app.register(statsRoutes);
+  await app.register(historyRoutes);
+  await app.register(purchaseRoutes);
+  await app.register(buyerRoutes);
+  await app.register(notificationRoutes);
+  await app.register(photoRoutes);
+  await app.register(auditRoutes);
 
   return app;
 }

@@ -3,6 +3,7 @@ import type { StatsOverview, ZoneStats } from '../api/types';
 import { Badge, Card, Empty, ErrorBox, Icon, PageHead, Spinner, Stat, useAction, useQuery, useToast } from '../ui/kit';
 import { SPECIES, errorText, date, num, pct, phone } from '../lib/format';
 import type { Species } from '../api/types';
+import { HealthMapCard } from './health';
 
 interface PendingVet { id: string; name: string; phone: string; zone: string | null; clinic: string | null; orderNumber: string; registeredAt: string | null }
 
@@ -37,6 +38,7 @@ export function StatsPage() {
           )}
         </Card>
       </div>
+      <HealthMapCard />
       <Card title="Par zone">
         {z.loading && !z.data ? <Spinner /> : !z.data?.items.length ? <Empty icon="chart" title="Pas de données par zone" /> : (
           <div className="table-wrap"><table>

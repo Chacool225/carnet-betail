@@ -13,6 +13,7 @@ const schema = z.object({
   LOGIN_MAX_ATTEMPTS: z.coerce.number().int().min(1).default(5),
   LOCK_MINUTES: z.coerce.number().int().min(1).default(15),
   RATE_LIMIT_ENABLED: z.enum(['true', 'false']).default('true'),
+  SMS_WEBHOOK_URL: z.string().url().optional().or(z.literal('')),
   OPENAPI_PATH: z.string().default('../../packages/contract/openapi.yaml'),
 });
 
@@ -29,6 +30,7 @@ export interface Config {
   loginMaxAttempts: number;
   lockMinutes: number;
   rateLimitEnabled: boolean;
+  smsWebhookUrl?: string | undefined;
   openapiPath: string;
 }
 
@@ -55,6 +57,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     loginMaxAttempts: e.LOGIN_MAX_ATTEMPTS,
     lockMinutes: e.LOCK_MINUTES,
     rateLimitEnabled: e.RATE_LIMIT_ENABLED === 'true',
+    smsWebhookUrl: e.SMS_WEBHOOK_URL || undefined,
     openapiPath: e.OPENAPI_PATH,
   };
 }

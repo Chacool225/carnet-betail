@@ -59,3 +59,43 @@ input[type=checkbox]{width:auto;min-height:0}.form,.stack{display:flex;flex-dire
 .camera video{width:100%;border-radius:12px;background:#000}.err-text{color:var(--red)}
 .app.simple .btn,.app.simple input,.app.simple select{min-height:52px}.app.simple .bar a{font-size:.85rem}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+/* Filtres, périodes et journal */
+.daterange{border:0;padding:0;margin:0;display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;flex-basis:100%}.daterange legend{font-weight:600;font-size:.85rem;color:var(--mute);padding:0;float:left;margin-right:.5rem}
+.daterange label{display:flex;align-items:center;gap:.35rem}.daterange input{width:auto}.chips{display:flex;flex-wrap:wrap;gap:.35rem}.chips .chip{padding:.3rem .65rem;font-size:.85rem}
+.morefilters{margin-bottom:1rem}.morefilters .filters{margin:.6rem 0 0}.filters.adv{padding:.8rem;border:1px dashed var(--line);border-radius:10px}
+.filterbar{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin-bottom:.8rem}.filterbar select{width:auto;min-width:130px}
+.seg.wide{display:flex}.seg.wide button{flex:1}
+.journal{list-style:none;margin:0;padding:0}.journal li{display:flex;gap:.75rem;padding:.7rem 1rem;border-bottom:1px solid var(--line)}.journal li:last-child{border-bottom:0}
+.journal .when{min-width:5.2rem;color:var(--mute);font-size:.85rem}.journal .day{padding:.4rem 1rem;background:var(--bg-soft,var(--line));font-weight:600;font-size:.85rem}
+.banner.archive{border-left:4px solid var(--amber)}.ro{opacity:.95}
+/* Achat, notifications, impression */
+.thumb{width:44px;height:44px;border-radius:10px;object-fit:cover}.linklike{background:none;border:0;color:inherit;font:inherit;cursor:pointer}
+.bell{position:relative}.bell .count{position:absolute;top:-4px;right:-4px;background:var(--red,#c0392b);color:#fff;border-radius:999px;font-size:.7rem;min-width:18px;height:18px;display:flex;align-items:center;justify-content:center;padding:0 4px}
+.paper{background:#fff;color:#111;border:1px solid var(--line);border-radius:12px;padding:1.5rem;max-width:820px;margin:0 auto}
+.paper h1{margin:.2rem 0 .6rem;font-size:1.5rem}.paper h2{font-size:1.05rem;margin:1.4rem 0 .4rem;border-bottom:2px solid #111;padding-bottom:.2rem}
+.paper-head{display:flex;justify-content:space-between;gap:1rem;align-items:flex-start;border-bottom:3px solid #111;padding-bottom:1rem;margin-bottom:1rem}.paper-brand{letter-spacing:.12em;font-size:.75rem;margin:0}
+.paper table{width:100%;border-collapse:collapse;font-size:.88rem}.paper th,.paper td{border:1px solid #999;padding:.35rem .5rem;text-align:left;vertical-align:top}.paper thead th{background:#eee}.paper table.plain th{width:35%;background:#f4f4f4}.paper .struck td{text-decoration:line-through;color:#666}
+.paper-note{padding:.5rem .7rem;background:#fff4d6;border:1px solid #d9b44a;border-radius:6px}.paper-foot{margin-top:1.5rem;font-size:.78rem;color:#444;border-top:1px solid #999;padding-top:.6rem}
+.signs{display:flex;gap:2rem;margin-top:2.5rem}.signs>div{flex:1}.signs .line{border-bottom:1px solid #111;height:3rem}
+@media print{
+  body{background:#fff}.top,.side,.bar,.noprint,.banner,.toasts{display:none!important}
+  .app,.body,main,.wrap{display:block!important;padding:0!important;margin:0!important;max-width:none!important}
+  .paper{border:0;padding:0;max-width:none}.paper h2,.paper table,.paper tr{break-inside:avoid}
+}
+
+.zonemap{width:100%;height:auto}.zonemap-bg{fill:var(--bg-soft,#f3f1ea);stroke:var(--line)}
+.bub{stroke:#fff;stroke-width:2;opacity:.9}.bub.none{fill:#b9c2b5}.bub.mild{fill:#e8b64a}.bub.warm{fill:#e0782f}.bub.hot{fill:#c0392b}
+.bub-n{fill:#fff;font-weight:700;font-size:13px}.bub-l{fill:currentColor;font-size:11px}
+.curve{width:100%;height:auto}.curve .axis{stroke:var(--line);stroke-width:1}.curve .line{stroke:var(--green,#2f7d4f);stroke-width:2.5}.curve .dot{fill:var(--green,#2f7d4f)}.curve .tick{fill:currentColor;font-size:10px;opacity:.7}
+
+/* Lot 7 : prix à l'unité, négociation, profil acheteur */
+.pricecol{display:flex;flex-direction:column;align-items:flex-end;text-align:right;flex:none}.price small{font-weight:400;font-size:.75rem;color:var(--mute)}
+.chat{display:flex;flex-direction:column;gap:.45rem;height:min(38vh,320px);min-height:150px;overflow:auto;padding:.6rem;background:var(--grey-soft);border-radius:12px}
+.msg{max-width:86%;padding:.4rem .7rem;border-radius:12px;background:var(--card);overflow-wrap:anywhere}.msg small{display:block;color:var(--mute);font-size:.72rem}
+.msg.mine{align-self:flex-end;background:var(--pri-soft)}.msg.sys{align-self:center;background:none;color:var(--mute);font-size:.85rem;text-align:center}
+.msg.prop{border:1px dashed var(--line)}.msg.recap{align-self:stretch;max-width:none;border:2px solid var(--pri);background:var(--card);white-space:pre-line}.msg.recap b{color:var(--pri)}
+.deal{display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin:.2rem 0}.deal>div{border:1px solid var(--line);border-radius:10px;padding:.5rem .7rem}.deal h4{margin:0 0 .15rem;font-size:.8rem;color:var(--mute);font-weight:600}
+.chatform{display:flex;gap:.5rem}.chatform input{flex:1;min-width:0}
+.dealform{display:grid;grid-template-columns:1fr 1fr;gap:.6rem;align-items:end}
+.who{background:var(--blue-soft);border-radius:10px;padding:.5rem .7rem;margin:.2rem 0}
+label.switch .mute{font-weight:400}

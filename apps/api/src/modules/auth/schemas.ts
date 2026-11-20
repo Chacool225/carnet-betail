@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { normalizePhone } from '../../lib/phone.js';
+import { buyerProfileBody } from '../buyers/schemas.js';
 
 export const phoneField = z
   .string()
@@ -15,7 +16,7 @@ export const pinField = z.string().regex(/^[0-9]{4}$/, 'Le code doit faire exact
 
 export const registerBody = z
   .object({
-    role: z.enum(['eleveur', 'vet']),
+    role: z.enum(['eleveur', 'vet', 'particulier']),
     name: z.string().trim().min(2).max(80),
     phone: phoneField,
     email: z.string().trim().toLowerCase().email().max(120).optional(),
@@ -24,10 +25,15 @@ export const registerBody = z
     zoneId: z.string().uuid().optional(),
     orderNumber: z.string().trim().min(3).max(40).optional(),
     clinic: z.string().trim().max(120).optional(),
+    /** Profession ou organisation d'un particulier (facultatif, modifiable ensuite). */
+    buyerProfile: buyerProfileBody.optional(),
   })
   .superRefine((v, ctx) => {
     if (v.role === 'vet' && !v.orderNumber) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['orderNumber'], message: "Le numéro d'ordre est obligatoire pour un vétérinaire." });
+    }
+    if (v.buyerProfile && v.role !== 'particulier') {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['buyerProfile'], message: 'Le profil acheteur est réservé aux particuliers.' });
     }
   });
 export type RegisterBody = z.infer<typeof registerBody>;
@@ -60,5 +66,7 @@ export const updateMeBody = z
   .refine((v) => Object.keys(v).length > 0, { message: 'Aucun champ à modifier.' });
 export type UpdateMeBody = z.infer<typeof updateMeBody>;
 
+export const forgotBody = z.object({ phone: phoneField });
+export const resetBody = z.object({ phone: phoneField, code: z.string().regex(/^\d{6}$/, 'Le code a 6 chiffres.'), newPassword: passwordField });
 export const changePasswordBody = z.object({ currentPassword: z.string().min(1).max(128), newPassword: passwordField });
 export const setPinBody = z.object({ password: z.string().min(1).max(128), pin: pinField });

@@ -19,7 +19,11 @@ export const STATUS: Record<Status, { label: string; tone: 'green' | 'amber' | '
   vole: { label: 'Volé', tone: 'red' },
 };
 
-export const ROLE_LABEL = { eleveur: 'Éleveur', vet: 'Vétérinaire', agent: 'Agent de terrain', autorite: 'Autorité' } as const;
+export const ROLE_LABEL = { eleveur: 'Éleveur', vet: 'Vétérinaire', agent: 'Agent de terrain', autorite: 'Autorité', particulier: 'Particulier' } as const;
+export const REQUEST_STATUS: Record<string, { label: string; tone: 'green' | 'amber' | 'red' | 'blue' | 'grey' }> = {
+  en_attente: { label: 'En attente', tone: 'amber' }, acceptee: { label: 'Acceptée', tone: 'green' }, refusee: { label: 'Refusée', tone: 'red' },
+  annulee: { label: 'Annulée', tone: 'grey' }, conclue: { label: 'Vente conclue', tone: 'blue' },
+};
 
 const fmtDate = new Intl.DateTimeFormat('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' });
 export const date = (d: string | null | undefined): string => {
@@ -40,6 +44,17 @@ export const phone = (p: string): string => p.replace(/(\d{2})(?=\d)/g, '$1 ').t
 
 export const headcount = (a: { kind: string; qty: number | null; species: Species }): string =>
   a.kind === 'lot' ? `${num(a.qty ?? 0)} ${SPECIES[a.species].plural}` : '1 animal';
+
+/** « 150 volailles », « 1 bovin ». */
+export const unitsLabel = (species: Species, n: number): string => `${num(n)} ${n > 1 ? SPECIES[species].plural : SPECIES[species].label.toLowerCase()}`;
+
+/** Prix à l'unité pour une quantité : le prix réduit s'applique dès que le seuil est atteint. */
+export const unitPriceFor = (t: { price: number; bulkMinQty: number | null; bulkPrice: number | null }, qty: number): number =>
+  t.bulkMinQty != null && t.bulkPrice != null && qty >= t.bulkMinQty ? t.bulkPrice : t.price;
+
+export const ORG_KIND: Record<string, string> = {
+  restaurant: 'Restaurant', hotel: 'Hôtel', boucherie: 'Boucherie', traiteur: 'Traiteur', cooperative: 'Coopérative', marche: 'Marché', autre: 'Autre organisation',
+};
 
 export const SEVERITY: Record<string, string> = { legere: 'Légère', moyenne: 'Moyenne', grave: 'Grave' };
 export const CASE_STATUS: Record<string, string> = { ouvert: 'Ouvert', suivi: 'En suivi', gueri: 'Guéri', clos: 'Clos' };
@@ -64,3 +79,10 @@ export const errorText = (e: unknown): string => {
     default: return x?.message ?? 'Une erreur est survenue.';
   }
 };
+
+export const EXIT_LABEL: Record<string, string> = { vente: 'Vendu', transfert: 'Transféré', abattage: 'Abattu', deces: 'Décédé', vol: 'Volé' };
+export const HISTORY_CATEGORY: Record<string, string> = {
+  compte: 'Compte', animal: 'Fiches', sante: 'Santé', mouvement: 'Mouvements', acces: 'Accès vétérinaires', marche: 'Marché', alerte: 'Alertes',
+};
+/** Date ISO (AAAA-MM-JJ) décalée de n jours à partir d'aujourd'hui. */
+export const daysAgoIso = (n: number): string => new Date(Date.now() - new Date().getTimezoneOffset() * 60000 - n * 86400000).toISOString().slice(0, 10);

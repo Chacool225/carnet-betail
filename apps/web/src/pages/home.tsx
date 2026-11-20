@@ -11,6 +11,7 @@ export function Home() {
   if (!user) return null;
   switch (user.role) {
     case 'eleveur': return user.prefs.simple ? <SimpleHome /> : <EleveurHome />;
+    case 'particulier': return <ParticulierHome />;
     case 'vet': return <VetHome />;
     case 'agent': return <AgentHome />;
     case 'autorite': return <AuthorityHome />;
@@ -201,6 +202,28 @@ function AuthorityHome() {
           )}
         </Card>
       </div>
+    </>
+  );
+}
+
+function ParticulierHome() {
+  const { user } = useAuth();
+  const mine = useQuery(() => cachedGet<Page<Animal>>(`/animals${qs({ limit: 5 })}`, user!.id), [], { cached: true });
+  const reqs = useQuery(() => api.get<Page<{ id: string; status: string; animal: { name: string }; other: { name: string; phone: string | null } }>>('/me/purchase-requests?limit=5'), []);
+  return (
+    <>
+      <PageHead title={`Bonjour ${user!.name.split(' ')[0]}`} sub="Trouvez un animal en bonne santé, avec son carnet complet." />
+      <Card title="Acheter un animal"><p>Parcourez les annonces des éleveurs : chaque fiche montre l'espèce, le prix, les vaccins faits et si un cas de maladie est en cours.</p><Link to="/marche" className="btn pri">Voir le marché</Link></Card>
+      <Card title="Mes demandes" actions={<Link to="/demandes" className="btn sm">Tout voir</Link>}>
+        {!reqs.data?.items.length ? <Empty icon="shop" title="Aucune demande">Faites une demande depuis une annonce du marché.</Empty> : (
+          <ul className="rows">{reqs.data.items.map((r) => <li key={r.id} className="row"><div className="grow"><b>{r.animal.name}</b><br /><span className="mute">{r.other.name}{r.other.phone ? ` · ${r.other.phone}` : ''}</span></div><Badge tone={r.status === 'acceptee' ? 'green' : r.status === 'en_attente' ? 'amber' : 'grey'}>{r.status.replace('_', ' ')}</Badge></li>)}</ul>
+        )}
+      </Card>
+      <Card title="Mes animaux" actions={<Link to="/animaux" className="btn sm">Tout voir</Link>}>
+        {!mine.data?.items.length ? <Empty icon="cow" title="Pas encore d'animal">Après un achat conclu, la fiche et son carnet de santé arrivent ici.</Empty> : (
+          <ul className="rows">{mine.data.items.map((a) => <li key={a.id}><Link to={`/animaux/${a.id}`} className="row"><span className="ico" aria-hidden="true">{SPECIES[a.species].icon}</span><div className="grow"><b>{a.name}</b> <span className="mono mute">{a.code}</span></div></Link></li>)}</ul>
+        )}
+      </Card>
     </>
   );
 }

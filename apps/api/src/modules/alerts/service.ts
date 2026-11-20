@@ -3,15 +3,20 @@ import type { Db, Row } from '../../db/index.js';
 import { AppError, notFound } from '../../lib/errors.js';
 import { iso, writeAudit } from '../../lib/audit.js';
 import { dateStr } from '../../lib/dates.js';
+import { dateParam, escapeLike, rangeCheck } from '../../lib/filters.js';
 import type { AuthContext } from '../../plugins/auth.js';
 import { userZone } from '../animals/service.js';
 
 export const alertsQuery = z.object({
   kind: z.enum(['vol', 'sanitaire', 'anomalie']).optional(),
   handled: z.enum(['true', 'false']).optional(),
+  q: z.string().trim().max(80).optional(),
+  from: dateParam.optional(),
+  to: dateParam.optional(),
+  order: z.enum(['asc', 'desc']).default('desc'),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
-});
+}).superRefine(rangeCheck([['from', 'to']]));
 export type AlertsQuery = z.infer<typeof alertsQuery>;
 
 const SELECT = `
@@ -29,10 +34,11 @@ const SELECT = `
 function scope(auth: AuthContext, zoneId: string | null): { sql: string; params: unknown[] } {
   if (auth.role === 'autorite') return { sql: 'true', params: [] };
   if (auth.role === 'agent') return zoneId ? { sql: 'al.zone_id = $1', params: [zoneId] } : { sql: 'false', params: [] };
-  const own = auth.role === 'eleveur' ? ' OR a.owner_id = $2' : '';
+  const owns = auth.role === 'eleveur' || auth.role === 'particulier';
+  const own = owns ? ' OR a.owner_id = $2' : '';
   return {
     sql: `((al.zone_id = $1 AND al.kind = 'sanitaire')${own})`,
-    params: auth.role === 'eleveur' ? [zoneId, auth.userId] : [zoneId],
+    params: owns ? [zoneId, auth.userId] : [zoneId],
   };
 }
 
@@ -61,11 +67,15 @@ export async function listAlerts(db: Db, auth: AuthContext, f: AlertsQuery) {
   const where = [s.sql];
   if (f.kind) { params.push(f.kind); where.push(`al.kind = $${params.length}`); }
   if (f.handled) where.push(f.handled === 'true' ? 'al.handled_at IS NOT NULL' : 'al.handled_at IS NULL');
+  if (f.from) { params.push(f.from); where.push(`al.created_on >= $${params.length}::date`); }
+  if (f.to) { params.push(f.to); where.push(`al.created_on <= $${params.length}::date`); }
+  if (f.q) { params.push(`%${escapeLike(f.q)}%`); where.push(`(al.title ILIKE $${params.length} OR al.why ILIKE $${params.length} OR a.public_code ILIKE $${params.length})`); }
   const w = where.join(' AND ');
+  const dateDir = f.order === 'asc' ? 'ASC' : 'DESC';
   const total = (await db.query<{ n: number }>(`SELECT count(*)::int AS n FROM alerts al LEFT JOIN animals a ON a.id = al.animal_id WHERE ${w}`, params))[0]!.n;
   const rows = await db.query(
     `${SELECT} WHERE ${w}
-     ORDER BY (al.handled_at IS NOT NULL), CASE al.severity WHEN 'haute' THEN 0 WHEN 'moyenne' THEN 1 ELSE 2 END, al.created_on DESC, al.id
+     ORDER BY (al.handled_at IS NOT NULL), CASE al.severity WHEN 'haute' THEN 0 WHEN 'moyenne' THEN 1 ELSE 2 END, al.created_on ${dateDir}, al.id
      LIMIT ${f.limit} OFFSET ${(f.page - 1) * f.limit}`,
     params,
   );

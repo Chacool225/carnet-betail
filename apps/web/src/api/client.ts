@@ -132,6 +132,7 @@ export const api = {
   get: <T = any>(path: string) => request<T>('GET', path),
   post: <T = any>(path: string, body?: unknown) => request<T>('POST', path, { body: body ?? {}, idempotent: true }),
   patch: <T = any>(path: string, body: unknown) => request<T>('PATCH', path, { body, idempotent: true }),
+  put: <T = any>(path: string, body: unknown) => request<T>('PUT', path, { body, idempotent: true }),
   del: <T = any>(path: string) => request<T>('DELETE', path, { idempotent: true }),
 };
 
@@ -152,3 +153,6 @@ export async function downloadCsv(path: string, filename: string): Promise<void>
 }
 
 export type { OpType, SyncResult };
+
+/** Adresse d'une photo : celles envoyées depuis le téléphone sont servies par l'API (« /photos/… »), les autres sont des adresses web complètes. */
+export const photoSrc = (u: string | null | undefined): string => (!u ? '' : u.startsWith('/photos/') ? `${BASE}${u}` : u);

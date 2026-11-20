@@ -2,79 +2,117 @@ import { useState } from 'react';
 import { ApiError, api, cachedGet, downloadCsv, qs } from '../api/client';
 import { submitOp } from '../api/offline';
 import type { Animal, Page, Species, Zone } from '../api/types';
-import { Badge, Card, Empty, ErrorBox, Field, Icon, PageHead, Pager, Spinner, useAction, useDebounced, useQuery, useToast } from '../ui/kit';
+import { Badge, Card, Empty, ErrorBox, Field, Icon, PageHead, Pager, Spinner, useAction, useQuery, useToast } from '../ui/kit';
 import { useAuth } from '../ui/auth';
 import { Link, navigate, useLoc } from '../lib/router';
-import { SPECIES, SPECIES_LIST, STATUS, errorText, headcount, date } from '../lib/format';
+import { DateRange, MoreFilters, ResetFilters, SearchBox, useUrlFilters } from '../ui/filters';
+import { EXIT_LABEL, SPECIES, SPECIES_LIST, STATUS, errorText, headcount, date } from '../lib/format';
 
 export function AnimalRow({ a, showOwner }: { a: Animal; showOwner: boolean }) {
+  const former = a.relation === 'former';
   return (
     <li>
-      <Link to={`/animaux/${a.id}`} className="row">
+      <Link to={former ? `/archives/${a.id}` : `/animaux/${a.id}`} className="row">
         <span className="ico" aria-hidden="true">{SPECIES[a.species].icon}</span>
         <div className="grow">
           <b>{a.name}</b> <span className="mono mute">{a.code}</span>
           <br /><span className="mute">{SPECIES[a.species].label}{a.breed ? ` · ${a.breed}` : ''} · {headcount(a)} · {a.zone.name}{showOwner ? ` · ${a.owner.name}` : ''}</span>
+          {former && a.exit && <><br /><span className="mute">Sorti du cheptel le {date(a.exit.on)} · dossier archivé</span></>}
         </div>
-        <Badge tone={STATUS[a.status].tone}>{STATUS[a.status].label}</Badge>
+        {former && a.exit ? <Badge tone="grey">{EXIT_LABEL[a.exit.type]}</Badge> : <Badge tone={STATUS[a.status].tone}>{STATUS[a.status].label}</Badge>}
       </Link>
     </li>
   );
 }
+
+const SORTS: [string, string][] = [
+  ['created:desc', 'Plus récents'], ['created:asc', 'Plus anciens'], ['name:asc', 'Nom A → Z'], ['name:desc', 'Nom Z → A'],
+  ['born:desc', 'Naissance récente'], ['born:asc', 'Naissance ancienne'], ['species:asc', 'Espèce'], ['updated:desc', 'Modifiés récemment'],
+];
 
 export function AnimalsPage() {
   const { user } = useAuth();
   const toast = useToast();
   const { query } = useLoc();
   const picking = query.get('do') === 'maladie';
-  const [q, setQ] = useState('');
-  const [species, setSpecies] = useState('');
-  const [kind, setKind] = useState('');
-  const [status, setStatus] = useState(user!.role === 'eleveur' ? 'actif' : '');
-  const [sort, setSort] = useState('created');
-  const [order, setOrder] = useState('desc');
-  const [page, setPage] = useState(1);
-  const dq = useDebounced(q);
-  const list = useQuery(
-    () => cachedGet<Page<Animal>>(`/animals${qs({ q: dq, species, kind, status, sort, order, page, limit: 20 })}`, user!.id),
-    [dq, species, kind, status, sort, order, page], { cached: true },
-  );
-  const reset = <T,>(set: (v: T) => void) => (v: T) => { set(v); setPage(1); };
   const isOwner = user!.role === 'eleveur';
+  const f = useUrlFilters({
+    q: '', species: '', kind: '', status: isOwner ? 'actif' : '', scope: 'current', sort: 'created:desc',
+    createdFrom: '', createdTo: '', bornFrom: '', bornTo: '', exitFrom: '', exitTo: '', withdrawal: '', openCase: '',
+  });
+  const v = f.values;
+  const all = isOwner && v.scope === 'all';
+  const [sort, order] = v.sort.split(':');
+  const params = {
+    q: v.q, species: v.species, kind: v.kind, status: all ? '' : v.status, scope: all ? 'all' : '', sort, order,
+    createdFrom: v.createdFrom, createdTo: v.createdTo, bornFrom: v.bornFrom, bornTo: v.bornTo,
+    exitFrom: all ? v.exitFrom : '', exitTo: all ? v.exitTo : '', withdrawal: v.withdrawal, openCase: v.openCase,
+  };
+  const list = useQuery(
+    () => cachedGet<Page<Animal>>(`/animals${qs({ ...params, page: f.page, limit: 20 })}`, user!.id),
+    [JSON.stringify(params), f.page], { cached: true },
+  );
+  const advanced = f.active(['q', 'species', 'kind', 'status', 'scope', 'sort']);
+  const total = f.active(all ? ['sort', 'scope', 'status'] : ['sort', 'scope']);
   const csv = async () => { try { await downloadCsv('/export/animals.csv', 'animaux.csv'); } catch (e) { toast(errorText(e), 'err'); } };
+  const sorts = all ? [...SORTS, ['exit:desc', 'Sortie récente'], ['exit:asc', 'Sortie ancienne']] as [string, string][] : SORTS;
 
   return (
     <>
-      <PageHead title={user!.role === 'vet' ? 'Mes accès' : 'Animaux'} sub={list.data ? `${list.data.total} fiche(s)` : undefined}>
+      <PageHead title={user!.role === 'vet' ? 'Mes accès' : all ? 'Cheptel complet' : 'Animaux'} sub={list.data ? `${list.data.total} fiche(s)` : undefined}>
         <button className="btn" onClick={csv}><Icon name="download" /> Exporter (CSV)</button>
         {isOwner && <Link to="/animaux/nouveau" className="btn pri"><Icon name="plus" /> Nouvel animal</Link>}
       </PageHead>
       {picking && <div className="banner info" role="status">Choisissez l'animal malade : vous pourrez décrire ce que vous voyez.</div>}
+      {isOwner && (
+        <div className="seg wide" role="radiogroup" aria-label="Quels animaux afficher" style={{ marginBottom: '.8rem' }}>
+          <button type="button" role="radio" aria-selected={!all} onClick={() => f.set({ scope: 'current', exitFrom: '', exitTo: '', status: 'actif' })}>Mon cheptel</button>
+          <button type="button" role="radio" aria-selected={all} onClick={() => f.set({ scope: 'all', status: '' })}>Cheptel complet (avec les sortis)</button>
+        </div>
+      )}
+      {all && <div className="banner info" role="status">Les animaux vendus, transférés, abattus ou morts restent consultables : leur dossier est figé à la date de sortie.</div>}
       <div className="filters">
-        <div className="search"><Icon name="search" size={18} /><input type="search" aria-label="Rechercher" placeholder="Nom, code, race, boucle…" value={q} onChange={(e) => reset(setQ)(e.target.value)} /></div>
-        <select aria-label="Espèce" value={species} onChange={(e) => reset(setSpecies)(e.target.value)}>
+        <SearchBox value={v.q} onChange={(q) => f.set({ q })} placeholder="Nom, code, race, boucle…" />
+        <select aria-label="Espèce" value={v.species} onChange={(e) => f.set({ species: e.target.value })}>
           <option value="">Toutes les espèces</option>{SPECIES_LIST.map((s) => <option key={s} value={s}>{SPECIES[s].label}</option>)}
         </select>
-        <select aria-label="Type" value={kind} onChange={(e) => reset(setKind)(e.target.value)}>
+        <select aria-label="Type" value={v.kind} onChange={(e) => f.set({ kind: e.target.value })}>
           <option value="">Animaux et lots</option><option value="individual">Animaux seuls</option><option value="lot">Lots</option>
         </select>
-        <select aria-label="Statut" value={status} onChange={(e) => reset(setStatus)(e.target.value)}>
-          <option value="">Tous les statuts</option>{Object.entries(STATUS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
-        </select>
-        <select aria-label="Trier par" value={`${sort}:${order}`} onChange={(e) => { const [s, o] = e.target.value.split(':'); setSort(s!); setOrder(o!); setPage(1); }}>
-          <option value="created:desc">Plus récents</option><option value="created:asc">Plus anciens</option><option value="name:asc">Nom A → Z</option><option value="name:desc">Nom Z → A</option>
-          <option value="born:desc">Naissance récente</option><option value="species:asc">Espèce</option>
+        {!all && (
+          <select aria-label="Statut" value={v.status} onChange={(e) => f.set({ status: e.target.value })}>
+            <option value="">Tous les statuts</option>{Object.entries(STATUS).map(([k, l]) => <option key={k} value={k}>{l.label}</option>)}
+          </select>
+        )}
+        <select aria-label="Trier par" value={v.sort} onChange={(e) => f.set({ sort: e.target.value })}>
+          {sorts.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
         </select>
       </div>
+      <MoreFilters count={advanced}>
+        <DateRange label="Fiche créée" from={v.createdFrom} to={v.createdTo} onChange={(a, b) => f.set({ createdFrom: a, createdTo: b })} />
+        <DateRange label="Date de naissance" from={v.bornFrom} to={v.bornTo} onChange={(a, b) => f.set({ bornFrom: a, bornTo: b })} />
+        {all && <DateRange label="Date de sortie" from={v.exitFrom} to={v.exitTo} onChange={(a, b) => f.set({ exitFrom: a, exitTo: b })} />}
+        {isOwner && (
+          <>
+            <select aria-label="Délai d'attente" value={v.withdrawal} onChange={(e) => f.set({ withdrawal: e.target.value })}>
+              <option value="">Délai d'attente : tous</option><option value="true">En délai d'attente</option><option value="false">Vendables</option>
+            </select>
+            <select aria-label="Maladie" value={v.openCase} onChange={(e) => f.set({ openCase: e.target.value })}>
+              <option value="">Maladie : tous</option><option value="true">Avec un cas ouvert</option><option value="false">Sans cas ouvert</option>
+            </select>
+          </>
+        )}
+      </MoreFilters>
+      <div className="filterbar"><ResetFilters count={total} onReset={f.reset} /></div>
       {list.stale && <div className="banner off">Liste enregistrée le {date(list.stale)} (hors-ligne).</div>}
       {list.loading && !list.data ? <Spinner /> : list.error && !list.data ? <ErrorBox error={list.error} retry={list.reload} /> : (
         <Card>
           {!list.data?.items.length ? (
-            <Empty icon="cow" title="Aucune fiche">{isOwner ? 'Ajoutez votre premier animal ou lot pour commencer son carnet de santé.' : user!.role === 'vet' ? 'Scannez un animal pour obtenir un accès de 30 jours.' : 'Aucun résultat avec ces filtres.'}</Empty>
+            <Empty icon="cow" title="Aucune fiche">{total ? 'Aucun résultat avec ces filtres.' : isOwner ? 'Ajoutez votre premier animal ou lot pour commencer son carnet de santé.' : user!.role === 'vet' ? 'Scannez un animal pour obtenir un accès de 30 jours.' : 'Aucun résultat avec ces filtres.'}</Empty>
           ) : (
-            <ul className="rows">{list.data.items.map((a) => <AnimalRow key={a.id} a={a} showOwner={!isOwner} />)}</ul>
+            <ul className="rows">{list.data.items.map((a) => <AnimalRow key={a.id} a={a} showOwner={!isOwner || a.relation === 'former'} />)}</ul>
           )}
-          {list.data && <Pager page={list.data.page} limit={list.data.limit} total={list.data.total} onPage={setPage} />}
+          {list.data && <Pager page={list.data.page} limit={list.data.limit} total={list.data.total} onPage={f.setPage} />}
         </Card>
       )}
     </>

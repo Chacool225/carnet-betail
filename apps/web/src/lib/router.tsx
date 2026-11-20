@@ -13,7 +13,9 @@ const Ctx = createContext<Loc>({ path: '/', query: new URLSearchParams() });
 export function RouterProvider({ children }: { children: ReactNode }) {
   const [loc, setLoc] = useState<Loc>(parse);
   useEffect(() => {
-    const on = () => { setLoc(parse()); window.scrollTo?.(0, 0); };
+    let last = parse().path;
+    // On ne remonte en haut que si la page change : modifier un filtre (qui change seulement l'adresse après « ? ») ne doit pas faire sauter l'écran.
+    const on = () => { const l = parse(); setLoc(l); if (l.path !== last) { last = l.path; window.scrollTo?.(0, 0); } };
     window.addEventListener('hashchange', on);
     return () => window.removeEventListener('hashchange', on);
   }, []);

@@ -1,4 +1,4 @@
-console.log('SEED DEMARRE');
+import { pathToFileURL } from 'node:url';
 import { loadConfig } from '../config.js';
 import { createDb, type Queryable } from '../db/index.js';
 import { migrate } from '../db/migrate.js';
@@ -72,43 +72,13 @@ export async function seed(q: Queryable): Promise<void> {
     ['00000000-0000-4000-8000-0000000000b1'],
   );
 }
+
 // Exécution directe : `pnpm seed`
-async function run() {
-  try {
-    console.log("ETAPE 1");
-
-    const config = loadConfig();
-
-    console.log("ETAPE 2");
-    console.log("DATABASE_URL =", config.databaseUrl);
-
-    const db = await createDb({
-      databaseUrl: config.databaseUrl,
-      pgliteDir: config.pgliteDir,
-    });
-
-    console.log("ETAPE 3");
-
-    await migrate(db);
-
-    console.log("ETAPE 4");
-
-    await db.tx(async (q) => {
-      console.log("ETAPE 5");
-      await seed(q);
-      console.log("ETAPE 6");
-    });
-
-    console.log(
-      `Données de démonstration prêtes. Mot de passe : ${DEMO_PASSWORD}`
-    );
-
-    await db.close();
-
-    console.log("ETAPE 7");
-  } catch (error) {
-    console.error("ERREUR :", error);
-  }
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const config = loadConfig();
+  const db = await createDb({ databaseUrl: config.databaseUrl, pgliteDir: config.pgliteDir });
+  await migrate(db);
+  await db.tx((q) => seed(q));
+  console.log(`Données de démonstration prêtes. Mot de passe de tous les comptes : ${DEMO_PASSWORD}`);
+  await db.close();
 }
-
-run();

@@ -117,3 +117,59 @@ export async function exportCasesCsv(db: Db, auth: AuthContext): Promise<string>
     rows.map((r) => [r.public_code, r.species, r.zone_name, (r.diseases as string[]).join(' | '), (r.diseases as string[]).some(isNotifiable), r.affected_count, r.deaths, r.severity, r.status, dateStr(r.opened_on), dateStr(r.closed_on)]),
   );
 }
+
+// ---------- Carte sanitaire et courbe des cas ----------
+
+import { z } from 'zod';
+export const healthQuery = z.object({
+  days: z.coerce.number().int().min(7).max(365).default(30),
+  disease: z.string().trim().max(80).optional(),
+  zoneId: z.string().uuid().optional(),
+});
+export type HealthQuery = z.infer<typeof healthQuery>;
+
+const DISEASE_OK = (n: string) => `($${n}::text IS NULL OR EXISTS (SELECT 1 FROM unnest(c.diseases) d WHERE lower(trim(d)) = $${n}))`;
+
+/** Cas déclarés par zone sur la période : de quoi colorer une carte et repérer les zones touchées. */
+export async function healthMap(db: Db, auth: AuthContext, f: HealthQuery) {
+  const scope = await statsZone(db, auth);
+  const disease = f.disease ? f.disease.toLowerCase() : null;
+  const rows = await db.query(
+    `SELECT z.id, z.name, z.lat, z.lng,
+       count(c.id)::int AS cases,
+       count(DISTINCT c.animal_id)::int AS animals,
+       (count(c.id) FILTER (WHERE c.status IN ('ouvert','suivi')))::int AS open_cases,
+       COALESCE(sum(c.deaths), 0)::int AS deaths
+     FROM zones z
+     LEFT JOIN animals a ON a.zone_id = z.id
+     LEFT JOIN cases c ON c.animal_id = a.id AND c.opened_on >= current_date - $2::int AND ${DISEASE_OK('3')}
+     WHERE ($1::uuid IS NULL OR z.id = $1)
+     GROUP BY z.id ORDER BY cases DESC, z.name`,
+    [scope, f.days, disease]);
+  const diseases = await db.query(
+    `SELECT lower(trim(d)) AS disease, count(*)::int AS cases FROM cases c JOIN animals a ON a.id = c.animal_id, unnest(c.diseases) d
+     WHERE ($1::uuid IS NULL OR a.zone_id = $1) AND c.opened_on >= current_date - $2::int GROUP BY 1 ORDER BY cases DESC, 1 LIMIT 30`, [scope, f.days]);
+  return {
+    periodDays: f.days, disease: disease,
+    items: rows.map((r) => ({ zone: { id: r.id as string, name: r.name as string, lat: r.lat as number | null, lng: r.lng as number | null }, cases: r.cases as number, animals: r.animals as number, openCases: r.open_cases as number, deaths: r.deaths as number })),
+    diseases: diseases.map((r) => ({ disease: r.disease as string, cases: r.cases as number, notifiable: isNotifiable(r.disease as string) })),
+  };
+}
+
+/** Nombre de cas déclarés par semaine, sans trou (une semaine sans cas vaut 0). */
+export async function casesTimeline(db: Db, auth: AuthContext, f: HealthQuery) {
+  const scope = await statsZone(db, auth);
+  const zone = scope ?? f.zoneId ?? null;
+  const disease = f.disease ? f.disease.toLowerCase() : null;
+  const rows = await db.query(
+    `SELECT g::date AS week, COALESCE(x.n, 0)::int AS cases, COALESCE(x.deaths, 0)::int AS deaths
+     FROM generate_series(date_trunc('week', current_date - $1::int), date_trunc('week', current_date), interval '1 week') g
+     LEFT JOIN (
+       SELECT date_trunc('week', c.opened_on)::date AS w, count(*) AS n, sum(c.deaths) AS deaths
+       FROM cases c JOIN animals a ON a.id = c.animal_id
+       WHERE c.opened_on >= current_date - $1::int AND ($2::uuid IS NULL OR a.zone_id = $2) AND ${DISEASE_OK('3')}
+       GROUP BY 1) x ON x.w = g::date
+     ORDER BY g`,
+    [f.days, zone, disease]);
+  return { periodDays: f.days, disease, zoneId: zone, points: rows.map((r) => ({ weekStart: dateStr(r.week)!, cases: r.cases as number, deaths: r.deaths as number })) };
+}

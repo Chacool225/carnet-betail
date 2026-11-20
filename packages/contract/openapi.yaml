@@ -25,6 +25,9 @@ tags:
   - name: Alertes
   - name: Synchronisation
   - name: Indicateurs
+  - name: Historique
+  - name: Achat
+  - name: Notifications
 paths:
   /health:
     get:
@@ -196,7 +199,17 @@ paths:
         - { name: kind, in: query, schema: { type: string, enum: [individual, lot] } }
         - { name: status, in: query, schema: { type: string, enum: [actif, vendu, abattu, decede, vole] } }
         - { name: zoneId, in: query, schema: { type: string, format: uuid } }
-        - { name: sort, in: query, schema: { type: string, enum: [name, created, born, species], default: created } }
+        - { name: scope, in: query, schema: { type: string, enum: [current, all], default: current }, description: "all (éleveur) : ajoute les animaux sortis du cheptel (vendus, transférés, abattus, morts, volés). Ils portent relation=former et exit ; leur dossier se lit par GET /animals/{id}/archive." }
+        - { name: createdFrom, in: query, schema: { type: string, format: date }, description: "Fiche créée à partir du" }
+        - { name: createdTo, in: query, schema: { type: string, format: date }, description: "Fiche créée jusqu'au (inclus)" }
+        - { name: bornFrom, in: query, schema: { type: string, format: date }, description: "Né à partir du" }
+        - { name: bornTo, in: query, schema: { type: string, format: date }, description: "Né jusqu'au (inclus)" }
+        - { name: exitFrom, in: query, schema: { type: string, format: date }, description: "Sorti du cheptel à partir du (scope=all)" }
+        - { name: exitTo, in: query, schema: { type: string, format: date }, description: "Sorti du cheptel jusqu'au (scope=all)" }
+        - { name: exited, in: query, schema: { type: boolean }, description: "scope=all : seulement les sortis (true) ou seulement ceux qui sont encore là (false)" }
+        - { name: withdrawal, in: query, schema: { type: boolean }, description: "En délai d'attente (true) ou vendables (false)" }
+        - { name: openCase, in: query, schema: { type: boolean }, description: "Avec (true) ou sans (false) cas de maladie ouvert" }
+        - { name: sort, in: query, schema: { type: string, enum: [name, created, born, species, updated, exit], default: created }, description: "exit : date de sortie (scope=all)" }
         - { name: order, in: query, schema: { type: string, enum: [asc, desc], default: desc } }
         - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
         - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
@@ -347,6 +360,11 @@ paths:
       parameters:
         - { $ref: '#/components/parameters/AnimalId' }
         - { name: type, in: query, schema: { type: string, enum: [vaccin, soin, controle] } }
+        - { name: q, in: query, schema: { type: string, maxLength: 80 }, description: "Libellé, note ou nom de l'auteur" }
+        - { name: from, in: query, schema: { type: string, format: date }, description: "Acte fait à partir du" }
+        - { name: to, in: query, schema: { type: string, format: date }, description: "Acte fait jusqu'au (inclus)" }
+        - { name: signed, in: query, schema: { type: boolean }, description: "Signés par un vétérinaire (true) ou non (false)" }
+        - { name: order, in: query, schema: { type: string, enum: [asc, desc], default: desc } }
       responses:
         '200': { description: Actes, content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/HealthEvent' } } } } } } }
         '404': { $ref: '#/components/responses/Error' }
@@ -406,7 +424,13 @@ paths:
       tags: [Santé]
       summary: Signalements de maladie
       security: [{ bearer: [] }]
-      parameters: [{ $ref: '#/components/parameters/AnimalId' }]
+      parameters:
+        - { $ref: '#/components/parameters/AnimalId' }
+        - { name: status, in: query, schema: { type: string, enum: [ouvert, suivi, gueri, clos] } }
+        - { name: q, in: query, schema: { type: string, maxLength: 80 }, description: "Maladie, symptôme ou note" }
+        - { name: from, in: query, schema: { type: string, format: date }, description: "Ouvert à partir du" }
+        - { name: to, in: query, schema: { type: string, format: date }, description: "Ouvert jusqu'au (inclus)" }
+        - { name: order, in: query, schema: { type: string, enum: [asc, desc], default: desc } }
       responses:
         '200': { description: Liste, content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/Case' } } } } } } }
     post:
@@ -443,7 +467,13 @@ paths:
       tags: [Mouvements]
       summary: Historique des mouvements (entrées, ventes, mortalité, vol, abattage…)
       security: [{ bearer: [] }]
-      parameters: [{ $ref: '#/components/parameters/AnimalId' }]
+      parameters:
+        - { $ref: '#/components/parameters/AnimalId' }
+        - { name: type, in: query, schema: { type: string, enum: [entree, mortalite, vente, vol, abattage, pesee, identification] } }
+        - { name: q, in: query, schema: { type: string, maxLength: 80 }, description: "Contrepartie, note ou auteur" }
+        - { name: from, in: query, schema: { type: string, format: date }, description: "À partir du" }
+        - { name: to, in: query, schema: { type: string, format: date }, description: "Jusqu'au (inclus)" }
+        - { name: order, in: query, schema: { type: string, enum: [asc, desc], default: desc } }
       responses:
         '200': { description: Mouvements, content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/Flow' } } } } } } }
         '404': { $ref: '#/components/responses/Error' }
@@ -526,16 +556,17 @@ paths:
   /animals/{id}/listing:
     post:
       tags: [Marché]
-      summary: Mettre en vente (refusé pendant un délai d'attente)
+      summary: Mettre en vente ou modifier l'annonce (refusé pendant un délai d'attente)
+      description: "Vente à l'unité : `price` est le prix d'un animal, `qty` le nombre mis en vente (tout le lot par défaut) et `bulkMinQty`/`bulkPrice` un prix réduit à partir d'un seuil."
       security: [{ bearer: [] }]
       parameters: [{ $ref: '#/components/parameters/AnimalId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
       requestBody:
         required: true
         content: { application/json: { schema: { $ref: '#/components/schemas/ListingBody' } } }
       responses:
-        '201': { description: En vente, content: { application/json: { schema: { type: object, properties: { animalId: { type: string }, price: { type: integer }, listed: { type: boolean } } } } } }
+        '201': { description: En vente, content: { application/json: { schema: { type: object, properties: { animalId: { type: string }, price: { type: integer }, qty: { type: integer }, bulkMinQty: { type: integer, nullable: true }, bulkPrice: { type: integer, nullable: true }, listed: { type: boolean } } } } } }
         '404': { $ref: '#/components/responses/Error' }
-        '409': { description: "withdrawal_active ou animal_not_active", content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '409': { description: "withdrawal_active, animal_not_active, qty_exceeds_stock ou qty_below_reserved (accords en cours)", content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '423': { description: "animal_locked", content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
     delete:
       tags: [Marché]
@@ -571,6 +602,10 @@ paths:
       parameters:
         - { name: kind, in: query, schema: { type: string, enum: [vol, sanitaire, anomalie] } }
         - { name: handled, in: query, schema: { type: string, enum: ['true', 'false'] } }
+        - { name: q, in: query, schema: { type: string, maxLength: 80 }, description: "Titre, explication, animal ou zone" }
+        - { name: from, in: query, schema: { type: string, format: date }, description: "Créée à partir du" }
+        - { name: to, in: query, schema: { type: string, format: date }, description: "Créée jusqu'au (inclus)" }
+        - { name: order, in: query, schema: { type: string, enum: [asc, desc], default: desc } }
         - { name: page, in: query, schema: { type: integer, default: 1 } }
         - { name: limit, in: query, schema: { type: integer, maximum: 100, default: 20 } }
       responses:
@@ -640,6 +675,244 @@ paths:
       responses:
         '200': { description: Zones, content: { application/json: { schema: { type: object, properties: { periodDays: { type: integer }, items: { type: array, items: { $ref: '#/components/schemas/ZoneStats' } } } } } } }
         '403': { $ref: '#/components/responses/Error' }
+  /auth/forgot-password:
+    post:
+      tags: [Auth]
+      summary: "Mot de passe oublié : envoie un code à 6 chiffres par SMS"
+      description: "Réponse identique que le numéro existe ou non. Un code par minute et par compte, valable 15 minutes."
+      requestBody: { content: { application/json: { schema: { type: object, required: [phone], properties: { phone: { type: string } } } } } }
+      responses:
+        '202': { description: Demande prise en compte }
+  /auth/reset-password:
+    post:
+      tags: [Auth]
+      summary: "Choisir un nouveau mot de passe avec le code reçu (5 essais au plus, usage unique, ferme toutes les sessions)"
+      requestBody: { content: { application/json: { schema: { type: object, required: [phone, code, newPassword], properties: { phone: { type: string }, code: { type: string, pattern: '^[0-9]{6}$' }, newPassword: { type: string, minLength: 8 } } } } } }
+      responses:
+        '204': { description: Mot de passe changé }
+        '422': { $ref: '#/components/responses/Error' }
+  /stats/health-map:
+    get:
+      tags: [Indicateurs]
+      summary: "Carte sanitaire : cas par zone (agent : sa zone ; autorité : tout le pays)"
+      security: [{ bearer: [] }]
+      parameters:
+        - { name: days, in: query, schema: { type: integer, minimum: 7, maximum: 365, default: 30 } }
+        - { name: disease, in: query, schema: { type: string } }
+      responses:
+        '200': { description: Zones avec cas, animaux touchés, cas ouverts, morts, et liste des maladies }
+  /stats/cases-timeline:
+    get:
+      tags: [Indicateurs]
+      summary: "Cas déclarés par semaine, sans trou"
+      security: [{ bearer: [] }]
+      parameters:
+        - { name: days, in: query, schema: { type: integer, minimum: 7, maximum: 365, default: 30 } }
+        - { name: disease, in: query, schema: { type: string } }
+        - { name: zoneId, in: query, schema: { type: string, format: uuid }, description: "Autorité seulement" }
+      responses:
+        '200': { description: Points hebdomadaires }
+  /audit:
+    get:
+      tags: [Indicateurs]
+      summary: "Journal d'audit de toute la plateforme (autorité, lecture seule)"
+      security: [{ bearer: [] }]
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: actorId, in: query, schema: { type: string, format: uuid } }
+        - { name: animalId, in: query, schema: { type: string, format: uuid } }
+        - { name: category, in: query, schema: { type: string, enum: [compte, animal, sante, mouvement, acces, marche, alerte] } }
+        - { name: role, in: query, schema: { type: string, enum: [eleveur, vet, agent, autorite, particulier] } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+        - { name: order, in: query, schema: { type: string, enum: [asc, desc], default: desc } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: limit, in: query, schema: { type: integer, maximum: 100, default: 30 } }
+      responses:
+        '200': { description: Page d'évènements }
+        '403': { $ref: '#/components/responses/Error' }
+  /market/{id}:
+    get:
+      tags: [Achat]
+      summary: "Fiche publique d'une annonce (acheteur)"
+      description: "Espèce, prix à l'unité, palier dégressif, quantité disponible, vaccins faits, présence d'un cas ouvert. Jamais la boucle RFID ni le téléphone de l'éleveur."
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/AnimalId' }]
+      responses:
+        '200': { description: Fiche publique, content: { application/json: { schema: { $ref: '#/components/schemas/MarketSheet' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+  /market/{id}/requests:
+    post:
+      tags: [Achat]
+      summary: "Demander à acheter (particulier ou éleveur)"
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/AnimalId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { content: { application/json: { schema: { type: object, properties: { message: { type: string, maxLength: 500 }, qty: { type: integer, minimum: 1, description: "Par défaut 1 (animal seul) ou tout ce qui reste disponible (lot)" }, offeredPrice: { type: integer, minimum: 0, description: "Prix à l'unité ; par défaut le prix de l'annonce pour cette quantité (prix réduit compris)" } } } } } }
+      responses:
+        '201': { description: "Demande créée avec sa première proposition", content: { application/json: { schema: { type: object, properties: { id: { type: string, format: uuid }, status: { type: string }, qty: { type: integer }, unitPrice: { type: integer }, total: { type: integer } } } } } }
+        '409': { description: "request_exists, own_animal, sold_out ou qty_exceeds_available", content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /me/purchase-requests:
+    get:
+      tags: [Achat]
+      summary: "Mes demandes envoyées"
+      security: [{ bearer: [] }]
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [en_attente, acceptee, refusee, annulee, conclue] } }
+        - { name: q, in: query, schema: { type: string } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+        - { name: order, in: query, schema: { type: string, enum: [asc, desc], default: desc } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: limit, in: query, schema: { type: integer, default: 20 } }
+      responses:
+        '200': { description: Page de demandes (le téléphone du vendeur n'apparaît qu'après acceptation) }
+  /purchase-requests:
+    get:
+      tags: [Achat]
+      summary: "Demandes reçues pour mes animaux (mêmes filtres)"
+      security: [{ bearer: [] }]
+      responses:
+        '200': { description: Page de demandes (le téléphone de l'acheteur n'apparaît qu'après acceptation) }
+  /purchase-requests/{id}:
+    get:
+      tags: [Achat]
+      summary: "Détail d'une demande (fenêtre de négociation), pour l'acheteur ou le vendeur"
+      security: [{ bearer: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200': { description: "Demande, côté de l'appelant (`side`), propositions (`mine`/`theirs`) et quantité encore disponible", content: { application/json: { schema: { $ref: '#/components/schemas/RequestDetail' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+  /purchase-requests/{id}/messages:
+    get:
+      tags: [Achat]
+      summary: "Conversation d'une demande"
+      security: [{ bearer: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200': { description: "Messages, propositions, récapitulatif d'accord et messages du système, du plus ancien au plus récent", content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/ChatMessage' } } } } } } }
+        '404': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [Achat]
+      summary: "Écrire dans la conversation (demande en attente ou acceptée)"
+      security: [{ bearer: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [body], properties: { body: { type: string, minLength: 1, maxLength: 1000 } } } } } }
+      responses:
+        '201': { description: "La conversation à jour", content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/ChatMessage' } } } } } } }
+        '409': { description: request_closed, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /purchase-requests/{id}/proposal:
+    post:
+      tags: [Achat]
+      summary: "Saisir sa proposition (quantité et prix à l'unité) ; deux propositions identiques concluent l'accord"
+      description: "Quand l'acheteur et le vendeur ont saisi la même quantité et le même prix, la demande passe à `acceptee`, la quantité est réservée et un message `recap` (quantité, prix à l'unité, total) est posté dans la conversation."
+      security: [{ bearer: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ProposalBody' } } } }
+      responses:
+        '200': { description: "La demande, avec `agreed: true` si l'accord vient d'être conclu", content: { application/json: { schema: { allOf: [{ $ref: '#/components/schemas/RequestDetail' }, { type: object, properties: { agreed: { type: boolean } } }] } } } }
+        '409': { description: "request_closed, not_listed ou qty_exceeds_available", content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /me/buyer-profile:
+    get:
+      tags: [Achat]
+      summary: "Mon profil d'acheteur (profession, organisation représentée)"
+      security: [{ bearer: [] }]
+      responses:
+        '200': { description: Profil ou null, content: { application/json: { schema: { type: object, properties: { profile: { allOf: [{ $ref: '#/components/schemas/BuyerProfile' }], nullable: true } } } } } }
+    put:
+      tags: [Achat]
+      summary: "Enregistrer mon profil d'acheteur (particulier)"
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/BuyerProfileBody' } } } }
+      responses:
+        '200': { description: Profil enregistré, content: { application/json: { schema: { type: object, properties: { profile: { $ref: '#/components/schemas/BuyerProfile' } } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /purchase-requests/{id}/accept:
+    post: { tags: [Achat], summary: "Accepter tel quel la proposition de l'acheteur (vendeur) : conclut l'accord", security: [{ bearer: [] }], responses: { '200': { description: Demande acceptée } } }
+  /purchase-requests/{id}/refuse:
+    post: { tags: [Achat], summary: "Refuser (vendeur)", security: [{ bearer: [] }], responses: { '200': { description: Demande refusée } } }
+  /purchase-requests/{id}/cancel:
+    post: { tags: [Achat], summary: "Annuler (acheteur)", security: [{ bearer: [] }], responses: { '200': { description: Demande annulée } } }
+  /purchase-requests/{id}/complete:
+    post:
+      tags: [Achat]
+      summary: "Conclure la vente (vendeur)"
+      description: "Vente de tout l'effectif : la fiche passe au compte de l'acheteur. Vente d'une partie d'un lot : la quantité vendue devient un nouveau lot (`newAnimalId`) chez l'acheteur, avec les vaccins et soins déjà enregistrés ; le vendeur garde le reste."
+      security: [{ bearer: [] }]
+      responses:
+        '200': { description: Vente conclue }
+        '409': { $ref: '#/components/responses/Error' }
+  /me/notifications:
+    get:
+      tags: [Notifications]
+      summary: "Mes notifications (rappels de vaccins, demandes d'achat)"
+      security: [{ bearer: [] }]
+      parameters: [{ name: unread, in: query, schema: { type: boolean } }]
+      responses:
+        '200': { description: Page de notifications avec le nombre de non lues }
+  /me/notifications/read-all:
+    post: { tags: [Notifications], summary: "Tout marquer comme lu", security: [{ bearer: [] }], responses: { '200': { description: OK } } }
+  /me/notifications/{id}/read:
+    post: { tags: [Notifications], summary: "Marquer comme lue", security: [{ bearer: [] }], responses: { '204': { description: OK } } }
+  /animals/{id}/photos/upload:
+    post:
+      tags: [Animaux]
+      summary: "Envoyer une photo (JPEG, PNG ou WebP en base 64, 1,5 Mo au plus après décodage)"
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/AnimalId' }]
+      requestBody: { content: { application/json: { schema: { type: object, required: [contentType, data], properties: { contentType: { type: string, enum: [image/jpeg, image/png, image/webp] }, data: { type: string } } } } } }
+      responses:
+        '201': { description: "Photo ajoutée (url relative /photos/ID/file)" }
+  /photos/{photoId}/file:
+    get:
+      tags: [Animaux]
+      summary: "Contenu d'une photo envoyée (public, identifiant aléatoire)"
+      parameters: [{ name: photoId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200': { description: Image }
+  /me/history:
+    get:
+      tags: [Historique]
+      summary: Journal de mon compte
+      description: |
+        Ce que j'ai fait et, pour un éleveur, ce qui est arrivé à ses animaux (par exemple l'acte d'un vétérinaire).
+        Pour un animal transféré, le journal de l'ancien propriétaire s'arrête au moment du transfert.
+      security: [{ bearer: [] }]
+      parameters:
+        - { name: q, in: query, schema: { type: string, maxLength: 80 }, description: "Animal, code, acte ou personne" }
+        - { name: category, in: query, schema: { type: string, enum: [compte, animal, sante, mouvement, acces, marche, alerte] } }
+        - { name: animalId, in: query, schema: { type: string, format: uuid } }
+        - { name: mine, in: query, schema: { type: boolean }, description: "Seulement mes propres actions" }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date }, description: "Inclus" }
+        - { name: order, in: query, schema: { type: string, enum: [asc, desc], default: desc } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 30 } }
+      responses:
+        '200':
+          description: Page d'évènements
+          content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/HistoryEntry' } }, total: { type: integer }, page: { type: integer }, limit: { type: integer } } } } }
+        '422': { $ref: '#/components/responses/Error' }
+  /export/history.csv:
+    get:
+      tags: [Historique]
+      summary: Export CSV du journal (5 000 lignes au plus, mêmes filtres que /me/history)
+      security: [{ bearer: [] }]
+      responses:
+        '200': { description: Fichier CSV, content: { text/csv: { schema: { type: string } } } }
+  /animals/{id}/archive:
+    get:
+      tags: [Historique]
+      summary: Dossier d'un animal sorti du cheptel (ancien propriétaire), en lecture seule
+      description: |
+        Figé à la date de sortie : actes, cas et mouvements saisis après le transfert ne sont pas visibles, ni l'identité du nouveau propriétaire.
+        404 si l'animal n'a jamais été à l'appelant, ou s'il le possède encore (utiliser GET /animals/{id}).
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/AnimalId' }]
+      responses:
+        '200': { description: Dossier archivé, content: { application/json: { schema: { $ref: '#/components/schemas/Archive' } } } }
+        '404': { $ref: '#/components/responses/Error' }
   /export/animals.csv:
     get:
       tags: [Indicateurs]
@@ -672,6 +945,27 @@ components:
       description: Erreur
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
   schemas:
+    HistoryEntry:
+      type: object
+      properties:
+        id: { type: integer }
+        at: { type: string, format: date-time }
+        action: { type: string }
+        category: { type: string, enum: [compte, animal, sante, mouvement, acces, marche, alerte] }
+        label: { type: string }
+        byMe: { type: boolean }
+        actor: { type: [object, 'null'], properties: { id: { type: string }, name: { type: string }, role: { type: string } } }
+        animal: { type: [object, 'null'], properties: { id: { type: string }, code: { type: string }, name: { type: string } } }
+    Archive:
+      type: object
+      properties:
+        readOnly: { type: boolean, const: true }
+        cutoff: { type: string, format: date }
+        exit: { type: object, properties: { type: { type: string, enum: [vente, transfert, abattage, deces, vol] }, on: { type: string, format: date } } }
+        animal: { type: object }
+        events: { type: array, items: { $ref: '#/components/schemas/HealthEvent' } }
+        cases: { type: array, items: { $ref: '#/components/schemas/Case' } }
+        flows: { type: array, items: { type: object } }
     Flow:
       type: object
       properties:
@@ -712,7 +1006,85 @@ components:
     ListingBody:
       type: object
       required: [price]
-      properties: { price: { type: integer, minimum: 0, description: FCFA } }
+      properties:
+        price: { type: integer, minimum: 0, description: "FCFA, prix d'un animal" }
+        qty: { type: integer, minimum: 1, description: "Nombre mis en vente ; tout le lot par défaut. Toujours 1 pour un animal seul." }
+        bulkMinQty: { type: integer, minimum: 2, description: "Seuil du prix réduit ; à fournir avec bulkPrice, et au plus égal à qty" }
+        bulkPrice: { type: integer, minimum: 0, description: "Prix réduit à l'unité dès bulkMinQty ; inférieur à price" }
+    ProposalBody:
+      type: object
+      required: [qty, unitPrice]
+      properties:
+        qty: { type: integer, minimum: 1 }
+        unitPrice: { type: integer, minimum: 0, description: FCFA }
+    Proposal:
+      type: object
+      properties: { qty: { type: integer }, unitPrice: { type: integer } }
+    BuyerProfileBody:
+      type: object
+      properties:
+        profession: { type: string, maxLength: 80 }
+        orgKind: { type: string, enum: [restaurant, hotel, boucherie, traiteur, cooperative, marche, autre] }
+        orgName: { type: string, maxLength: 120, description: "Obligatoire avec orgKind, et réciproquement" }
+        contactName: { type: string, maxLength: 80 }
+        contactPhone: { type: string, description: "10 chiffres ; transmis au vendeur seulement après l'accord" }
+        locality: { type: string, maxLength: 120 }
+    BuyerProfile:
+      type: object
+      properties:
+        profession: { type: string, nullable: true }
+        orgKind: { type: string, nullable: true }
+        orgName: { type: string, nullable: true }
+        contactName: { type: string, nullable: true }
+        contactPhone: { type: string, nullable: true }
+        locality: { type: string, nullable: true }
+    ChatMessage:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [text, proposal, recap, system] }
+        body: { type: string }
+        senderId: { type: string, format: uuid, nullable: true, description: "null pour un message du système (récapitulatif, refus…)" }
+        senderName: { type: string, nullable: true }
+        mine: { type: boolean }
+        qty: { type: integer, nullable: true }
+        unitPrice: { type: integer, nullable: true }
+        total: { type: integer, nullable: true }
+        createdAt: { type: string, format: date-time }
+    RequestDetail:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [en_attente, acceptee, refusee, annulee, conclue] }
+        side: { type: string, enum: [buyer, seller] }
+        qty: { type: integer }
+        agreedQty: { type: integer, nullable: true }
+        agreedPrice: { type: integer, nullable: true, description: "Prix à l'unité convenu" }
+        agreedTotal: { type: integer, nullable: true }
+        listingPrice: { type: integer, nullable: true }
+        bulkMinQty: { type: integer, nullable: true }
+        bulkPrice: { type: integer, nullable: true }
+        mine: { allOf: [{ $ref: '#/components/schemas/Proposal' }], nullable: true }
+        theirs: { allOf: [{ $ref: '#/components/schemas/Proposal' }], nullable: true }
+        availableQty: { type: integer, nullable: true, description: "Quantité encore disponible (demande en attente seulement)" }
+        other: { type: object, properties: { name: { type: string }, phone: { type: string, nullable: true } } }
+        buyerProfile: { allOf: [{ $ref: '#/components/schemas/BuyerProfile' }], nullable: true, description: "Vu par le vendeur seulement" }
+    MarketSheet:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string }
+        species: { $ref: '#/components/schemas/Species' }
+        kind: { type: string, enum: [individual, lot] }
+        name: { type: string }
+        qty: { type: integer, nullable: true, description: "Effectif du lot" }
+        price: { type: integer, description: "Prix à l'unité" }
+        bulkMinQty: { type: integer, nullable: true }
+        bulkPrice: { type: integer, nullable: true }
+        listingQty: { type: integer, description: "Nombre mis en vente" }
+        availableQty: { type: integer, description: "Mis en vente moins ce qui est réservé par des accords" }
+        isMine: { type: boolean }
+        myRequest: { type: object, nullable: true, properties: { id: { type: string, format: uuid }, status: { type: string } } }
     MarketItem:
       type: object
       properties:
@@ -725,7 +1097,10 @@ components:
         sex: { type: string, nullable: true }
         qty: { type: integer, nullable: true }
         avgWeightKg: { type: number, nullable: true }
-        price: { type: integer }
+        price: { type: integer, description: "Prix à l'unité" }
+        listingQty: { type: integer, nullable: true, description: "Nombre mis en vente" }
+        bulkMinQty: { type: integer, nullable: true }
+        bulkPrice: { type: integer, nullable: true }
         listedAt: { type: string, format: date-time }
         zone: { type: string }
         ownerName: { type: string }
@@ -983,7 +1358,7 @@ components:
       type: object
       required: [role, name, phone, password]
       properties:
-        role: { type: string, enum: [eleveur, vet] }
+        role: { type: string, enum: [eleveur, vet, particulier] }
         name: { type: string }
         phone: { type: string }
         email: { type: string }
@@ -992,6 +1367,7 @@ components:
         zoneId: { type: string, format: uuid }
         orderNumber: { type: string, description: 'Obligatoire pour un vétérinaire' }
         clinic: { type: string }
+        buyerProfile: { $ref: '#/components/schemas/BuyerProfileBody' }
     UpdateMeBody:
       type: object
       minProperties: 1

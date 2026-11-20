@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "migrate": "tsx --env-file-if-exists=.env src/scripts/migrate-cli.ts",
-    "seed": "tsx --env-file-if-exists=.env src/scripts/seed.ts"
+    "seed": "tsx --env-file-if-exists=.env src/scripts/seed.ts",
+    "seed:complet": "tsx --env-file-if-exists=.env src/scripts/seed-complet.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.2.0",

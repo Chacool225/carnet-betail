@@ -1,4 +1,7 @@
+import { randomInt } from 'node:crypto';
+import { saveBuyerProfile } from '../buyers/service.js';
 import type { Config } from '../../config.js';
+import { sendSms } from '../../lib/sms.js';
 import type { Db, Queryable, Row } from '../../db/index.js';
 import { AppError, conflict, invalid, notFound, tooMany, unauthorized } from '../../lib/errors.js';
 import { afterFailure, isLocked } from '../../lib/lockout.js';
@@ -10,7 +13,7 @@ import type { LoginBody, PinLoginBody, RegisterBody, UpdateMeBody } from './sche
 
 export interface PublicUser {
   id: string;
-  role: 'eleveur' | 'vet' | 'agent' | 'autorite';
+  role: 'eleveur' | 'vet' | 'agent' | 'autorite' | 'particulier';
   name: string;
   phone: string;
   email: string | null;
@@ -106,6 +109,7 @@ export async function register(db: Db, cfg: Config, body: RegisterBody, userAgen
         throw e;
       }
     }
+    if (body.buyerProfile) await saveBuyerProfile(q, id, body.buyerProfile);
     await writeAudit(q, { actorId: id, action: 'auth.register', detail: { role: body.role } });
     const row = (await getUserRow(q, id))!;
     return issueTokens(q, cfg, row, { userAgent });
@@ -169,7 +173,11 @@ async function checkSecret(
 export async function login(db: Db, cfg: Config, body: LoginBody, userAgent?: string): Promise<AuthResult> {
   const row = await findByIdentifier(db, body.identifier);
   const ok = await checkSecret(db, cfg, row, body.password, (r) => r.password_hash);
-  return db.tx((q) => issueTokens(q, cfg, ok, { userAgent }));
+  return db.tx(async (q) => {
+    const result = await issueTokens(q, cfg, ok, { userAgent });
+    await writeAudit(q, { actorId: ok.id, action: 'auth.login', detail: { method: 'password', device: userAgent?.slice(0, 120) ?? null } });
+    return result;
+  });
 }
 
 /** Connexion du mode simple : visage (identifiant du compte, mémorisé sur le téléphone) ou téléphone, plus code à 4 chiffres. */
@@ -180,7 +188,11 @@ export async function pinLogin(db: Db, cfg: Config, body: PinLoginBody, userAgen
   // Le mode simple est réservé aux éleveurs.
   const usable = row && row.role === 'eleveur' ? row : undefined;
   const ok = await checkSecret(db, cfg, usable, body.pin, (r) => r.pin_hash);
-  return db.tx((q) => issueTokens(q, cfg, ok, { userAgent }));
+  return db.tx(async (q) => {
+    const result = await issueTokens(q, cfg, ok, { userAgent });
+    await writeAudit(q, { actorId: ok.id, action: 'auth.login', detail: { method: 'pin', device: userAgent?.slice(0, 120) ?? null } });
+    return result;
+  });
 }
 
 /** Renouvelle les jetons. Chaque jeton de renouvellement ne sert qu'une fois ; le réutiliser révoque toute la famille. */
@@ -276,5 +288,48 @@ export async function setPin(db: Db, cfg: Config, id: string, password: string, 
   await db.tx(async (q) => {
     await q.query('UPDATE users SET pin_hash = $2, updated_at = now() WHERE id = $1', [id, hash]);
     await writeAudit(q, { actorId: id, action: 'auth.pin_changed' });
+  });
+}
+
+// ---------- Mot de passe oublié ----------
+const RESET_MINUTES = 15;
+const RESET_MAX_ATTEMPTS = 5;
+
+/** Envoie un code à 6 chiffres. Silencieux si le numéro est inconnu, et au plus un code par minute et par compte. */
+export async function forgotPassword(db: Db, cfg: Config, phoneRaw: string, log: (m: string) => void): Promise<void> {
+  const phone = normalizePhone(phoneRaw);
+  const row = (await db.query('SELECT id, phone FROM users WHERE phone = $1', [phone]))[0];
+  if (!row) { await dummyVerify('000000'); return; }
+  const recent = await db.query("SELECT 1 FROM password_resets WHERE user_id = $1 AND created_at > now() - interval '60 seconds'", [row.id]);
+  if (recent.length) return;
+  const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
+  const hash = await hashSecret(code);
+  await db.tx(async (q) => {
+    await q.query('UPDATE password_resets SET used_at = now() WHERE user_id = $1 AND used_at IS NULL', [row.id]);
+    await q.query(`INSERT INTO password_resets (user_id, code_hash, expires_at) VALUES ($1, $2, now() + interval '${RESET_MINUTES} minutes')`, [row.id, hash]);
+    await writeAudit(q, { actorId: row.id, action: 'auth.password_reset_requested' });
+  });
+  try {
+    await sendSms(cfg.smsWebhookUrl, row.phone as string, `Carnet Bétail : votre code est ${code}. Il est valable ${RESET_MINUTES} minutes. Ne le donnez à personne.`, log);
+  } catch (e) { log(`envoi du code impossible : ${String(e)}`); }
+}
+
+export async function resetPassword(db: Db, phoneRaw: string, code: string, newPassword: string): Promise<void> {
+  const bad = () => invalid('Code incorrect ou expiré.', [{ path: ['code'], message: 'Code incorrect ou expiré.' }]);
+  const phone = normalizePhone(phoneRaw);
+  const user = (await db.query('SELECT id FROM users WHERE phone = $1', [phone]))[0];
+  const r = user ? (await db.query('SELECT * FROM password_resets WHERE user_id = $1 AND used_at IS NULL AND expires_at > now() ORDER BY created_at DESC LIMIT 1', [user.id]))[0] : undefined;
+  if (!user || !r) { await dummyVerify(code); throw bad(); }
+  if ((r.attempts as number) >= RESET_MAX_ATTEMPTS) throw bad();
+  if (!(await verifySecret(code, r.code_hash as string))) {
+    await db.query('UPDATE password_resets SET attempts = attempts + 1 WHERE id = $1', [r.id]);
+    throw bad();
+  }
+  const hash = await hashSecret(newPassword);
+  await db.tx(async (q) => {
+    await q.query('UPDATE users SET password_hash = $2, failed_attempts = 0, locked_until = NULL, updated_at = now() WHERE id = $1', [user.id, hash]);
+    await q.query('UPDATE password_resets SET used_at = now() WHERE user_id = $1 AND used_at IS NULL', [user.id]);
+    await q.query('UPDATE refresh_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL', [user.id]);
+    await writeAudit(q, { actorId: user.id as string, action: 'auth.password_reset' });
   });
 }

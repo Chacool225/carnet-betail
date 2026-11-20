@@ -27,6 +27,7 @@ export interface AnimalDto {
   zone: { id: string; name: string };
   owner: { id: string; name: string };
   photos: { id: string; url: string }[];
+  listing: { price: number; qty: number; bulkMinQty: number | null; bulkPrice: number | null; listedAt: string | null } | null;
   createdAt: string | null;
   updatedAt: string | null;
 }
@@ -56,6 +57,9 @@ export function toAnimal(r: Row, photos: Row[] = []): AnimalDto {
     zone: { id: r.zone_id, name: r.zone_name },
     owner: { id: r.owner_id, name: r.owner_name },
     photos: photos.map((p) => ({ id: p.id, url: p.url })),
+    listing: r.listed_at && r.status === 'actif'
+      ? { price: Number(r.listing_price), qty: Number(r.listing_qty ?? r.qty ?? 1), bulkMinQty: r.bulk_min_qty == null ? null : Number(r.bulk_min_qty), bulkPrice: r.bulk_price == null ? null : Number(r.bulk_price), listedAt: iso(r.listed_at) }
+      : null,
     createdAt: iso(r.created_at),
     updatedAt: iso(r.updated_at),
   };
@@ -74,6 +78,7 @@ const escapeLike = (s: string) => s.replace(/[\\%_]/g, (c) => `\\${c}`);
 export function scopeSql(auth: AuthContext, zoneId: string | null, start: number): { sql: string; params: unknown[] } {
   switch (auth.role) {
     case 'eleveur':
+    case 'particulier':
       return { sql: `a.owner_id = $${start}`, params: [auth.userId] };
     case 'vet':
       return {
@@ -92,8 +97,33 @@ export async function userZone(q: Queryable, userId: string): Promise<string | n
   return (await q.query('SELECT zone_id FROM users WHERE id = $1', [userId]))[0]?.zone_id ?? null;
 }
 
+export type ExitType = 'vente' | 'transfert' | 'abattage' | 'deces' | 'vol';
+
+/**
+ * SQL de la date et du type de sortie d'un animal du cheptel de l'éleveur `$me`.
+ * - animal que je possède encore : sa sortie est son statut (vendu, abattu, décédé, volé), sinon rien ;
+ * - animal que j'ai transféré (ou vendu à un éleveur inscrit) : la date du dernier transfert que j'ai fait.
+ */
+export function exitSql(me: number): { on: string; type: string } {
+  const last = (t: string) => `(SELECT max(f.occurred_on) FROM flows f WHERE f.animal_id = a.id AND f.type = '${t}')`;
+  const lastTransfer = `(SELECT max(t.occurred_on) FROM transfers t WHERE t.animal_id = a.id AND t.from_user = $${me})`;
+  return {
+    on: `CASE WHEN a.owner_id = $${me} THEN CASE a.status WHEN 'vendu' THEN ${last('vente')} WHEN 'abattu' THEN ${last('abattage')} WHEN 'decede' THEN ${last('mortalite')} WHEN 'vole' THEN ${last('vol')} END ELSE ${lastTransfer} END`,
+    type: `CASE WHEN a.owner_id = $${me} THEN CASE a.status WHEN 'vendu' THEN 'vente' WHEN 'abattu' THEN 'abattage' WHEN 'decede' THEN 'deces' WHEN 'vole' THEN 'vol' END
+           ELSE CASE WHEN EXISTS (SELECT 1 FROM flows f WHERE f.animal_id = a.id AND f.type = 'vente' AND f.recorded_by = $${me} AND f.occurred_on = ${lastTransfer}) THEN 'vente' ELSE 'transfert' END END`,
+  };
+}
+
+const WITHDRAWAL_ACTIVE = `EXISTS (SELECT 1 FROM health_events e WHERE e.animal_id = a.id AND e.withdrawal_days > 0
+  AND e.done_on + e.withdrawal_days > current_date AND NOT EXISTS (SELECT 1 FROM health_events c WHERE c.corrects_event_id = e.id))`;
+const OPEN_CASE = `EXISTS (SELECT 1 FROM cases c WHERE c.animal_id = a.id AND c.status IN ('ouvert', 'suivi'))`;
+
 export async function listAnimals(db: Db, auth: AuthContext, f: ListQuery) {
-  const scope = scopeSql(auth, auth.role === 'agent' ? await userZone(db, auth.userId) : null, 1);
+  // scope=all : le cheptel complet de l'éleveur, y compris ce qu'il a transféré ou vendu à un éleveur inscrit.
+  const all = f.scope === 'all' && auth.role === 'eleveur';
+  const scope = all
+    ? { sql: `(a.owner_id = $1 OR EXISTS (SELECT 1 FROM transfers t0 WHERE t0.animal_id = a.id AND t0.from_user = $1))`, params: [auth.userId] }
+    : scopeSql(auth, auth.role === 'agent' ? await userZone(db, auth.userId) : null, 1);
   const params: unknown[] = [...scope.params];
   const where: string[] = [scope.sql];
   const add = (sql: (n: number) => string, v: unknown) => {
@@ -108,19 +138,49 @@ export async function listAnimals(db: Db, auth: AuthContext, f: ListQuery) {
   if (f.kind) add((n) => `a.kind = $${n}`, f.kind);
   if (f.status) add((n) => `a.status = $${n}`, f.status);
   if (f.zoneId) add((n) => `a.zone_id = $${n}`, f.zoneId);
+  if (f.createdFrom) add((n) => `a.created_at::date >= $${n}::date`, f.createdFrom);
+  if (f.createdTo) add((n) => `a.created_at::date <= $${n}::date`, f.createdTo);
+  if (f.bornFrom) add((n) => `a.born_on >= $${n}::date`, f.bornFrom);
+  if (f.bornTo) add((n) => `a.born_on <= $${n}::date`, f.bornTo);
+  if (f.withdrawal !== undefined) where.push(f.withdrawal ? WITHDRAWAL_ACTIVE : `NOT ${WITHDRAWAL_ACTIVE}`);
+  if (f.openCase !== undefined) where.push(f.openCase ? OPEN_CASE : `NOT ${OPEN_CASE}`);
 
-  const sortCol = { name: 'a.name', created: 'a.created_at', born: 'a.born_on', species: 'a.species' }[f.sort];
+  const exit = all ? exitSql(1) : null;
+  if (exit) {
+    if (f.exited !== undefined) where.push(f.exited ? `(${exit.on}) IS NOT NULL` : `(${exit.on}) IS NULL`);
+    if (f.exitFrom) add((n) => `(${exit.on}) >= $${n}::date`, f.exitFrom);
+    if (f.exitTo) add((n) => `(${exit.on}) <= $${n}::date`, f.exitTo);
+  }
+
+  const sortCol =
+    f.sort === 'exit' && exit
+      ? `(${exit.on})`
+      : { name: 'a.name', created: 'a.created_at', born: 'a.born_on', species: 'a.species', updated: 'a.updated_at', exit: 'a.created_at' }[f.sort];
   const dir = f.order === 'asc' ? 'ASC' : 'DESC';
   const whereSql = where.join(' AND ');
+  const select = exit
+    ? BASE.replace('SELECT a.*,', `SELECT a.*, (${exit.on}) AS exit_on, (${exit.type}) AS exit_type, CASE WHEN a.owner_id = $1 THEN 'owner' ELSE 'former' END AS relation,`)
+    : BASE;
 
   const total = (await db.query<{ n: number }>(`SELECT count(*)::int AS n FROM animals a WHERE ${whereSql}`, params))[0]!.n;
   const rows = await db.query(
-    `${BASE} WHERE ${whereSql} ORDER BY ${sortCol} ${dir} NULLS LAST, a.id LIMIT ${f.limit} OFFSET ${(f.page - 1) * f.limit}`,
+    `${select} WHERE ${whereSql} ORDER BY ${sortCol} ${dir} NULLS LAST, a.id LIMIT ${f.limit} OFFSET ${(f.page - 1) * f.limit}`,
     params,
   );
   const photos = await photosFor(db, rows.map((r) => r.id));
   return {
-    items: rows.map((r) => toAnimal(r, photos.get(r.id) ?? [])),
+    items: rows.map((r) => {
+      const dto = toAnimal(r, photos.get(r.id) ?? []);
+      if (!all) return dto;
+      const former = r.relation === 'former';
+      return {
+        ...dto,
+        // L'ancien propriétaire ne doit pas apprendre qui détient l'animal aujourd'hui.
+        owner: former ? { id: '', name: 'Un autre éleveur' } : dto.owner,
+        relation: r.relation as 'owner' | 'former',
+        exit: r.exit_on ? { type: r.exit_type as ExitType, on: dateStr(r.exit_on)! } : null,
+      };
+    }),
     total,
     page: f.page,
     limit: f.limit,
@@ -146,7 +206,7 @@ export async function loadVisible(q: Queryable, auth: AuthContext, id: string, l
   if (!row) throw notFound('Animal introuvable.');
   let level: AccessLevel | null = null;
   if (auth.role === 'autorite') level = 'autorite';
-  else if (auth.role === 'eleveur') level = row.owner_id === auth.userId ? 'owner' : null;
+  else if (auth.role === 'eleveur' || auth.role === 'particulier') level = row.owner_id === auth.userId ? 'owner' : null;
   else if (auth.role === 'agent') level = row.zone_id === (await userZone(q, auth.userId)) ? 'agent' : null;
   else if (auth.role === 'vet') {
     const g = await q.query(
@@ -201,7 +261,7 @@ async function assertZone(q: Queryable, zoneId: string): Promise<void> {
   }
 }
 
-async function nextCode(q: Queryable, species: Species): Promise<string> {
+export async function nextCode(q: Queryable, species: Species): Promise<string> {
   const n = (await q.query<{ n: string }>("SELECT nextval('animal_code_seq')::text AS n"))[0]!.n;
   return `CI-${SPECIES_PREFIX[species]}-${n.padStart(5, '0')}`;
 }

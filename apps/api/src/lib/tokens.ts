@@ -6,7 +6,7 @@ const AUDIENCE = 'carnet-betail-api';
 
 export interface AccessClaims {
   sub: string;
-  role: 'eleveur' | 'vet' | 'agent' | 'autorite';
+  role: 'eleveur' | 'vet' | 'agent' | 'autorite' | 'particulier';
 }
 
 const key = (secret: string) => new TextEncoder().encode(secret);

@@ -1,11 +1,12 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { ApiError, api } from '../api/client';
+import { ApiError, api, photoSrc, qs } from '../api/client';
 import { submitOp } from '../api/offline';
 import type { Animal, Case, Flow, Grant, HealthEvent, HealthSummary, VetSummary } from '../api/types';
 import { Badge, Card, Empty, ErrorBox, Field, Icon, Modal, PageHead, QrCode, Spinner, useAction, useQuery, useToast } from '../ui/kit';
 import { useAuth } from '../ui/auth';
 import { Link, back, navigate, useLoc } from '../lib/router';
-import { CASE_STATUS, EVENT_TYPE, FLOW_LABEL, SEVERITY, SPECIES, STATUS, date, dateTime, errorText, fcfa, headcount, num, phone, todayIso } from '../lib/format';
+import { DateRange, ResetFilters, SearchBox } from '../ui/filters';
+import { CASE_STATUS, EVENT_TYPE, FLOW_LABEL, SEVERITY, SPECIES, STATUS, date, dateTime, errorText, fcfa, headcount, num, phone, todayIso, unitsLabel } from '../lib/format';
 
 type ModalName = null | 'event' | 'mortalite' | 'case' | 'sale' | 'slaughter' | 'transfer' | 'theft' | 'recovery' | 'listing' | 'invite' | 'photo' | 'edit';
 type Tab = 'resume' | 'sante' | 'mouvements' | 'acces' | 'photos';
@@ -216,14 +217,54 @@ function SimpleActionModal({ a, kind, onClose, onDone }: { a: Animal; kind: 'the
 }
 
 function ListingModal({ a, onClose, onDone }: { a: Animal; onClose: () => void; onDone: () => void }) {
-  const [price, setPrice] = useState('');
+  const isLot = a.kind === 'lot';
+  const stock = a.qty ?? 1;
+  const cur = a.listing ?? null;
+  const [qty, setQty] = useState(String(cur?.qty ?? stock));
+  const [price, setPrice] = useState(cur ? String(cur.price) : '');
+  const [bulk, setBulk] = useState(!!cur?.bulkMinQty);
+  const [minQty, setMinQty] = useState(cur?.bulkMinQty ? String(cur.bulkMinQty) : '');
+  const [bulkPrice, setBulkPrice] = useState(cur?.bulkPrice != null ? String(cur.bulkPrice) : '');
   const { busy, run } = useAction();
-  const submit = async (e: React.FormEvent) => { e.preventDefault(); const r = await run(() => api.post(`/animals/${a.id}/listing`, { price: Number(price) }), 'Annonce publiée'); if (r) { onDone(); onClose(); } };
+  const q = Math.floor(Number(qty) || 0), p = Number(price) || 0, mq = Math.floor(Number(minQty) || 0), bp = Number(bulkPrice);
+  const errs: Record<string, string> = {};
+  if (isLot && (q < 1 || q > stock)) errs.qty = `Entre 1 et ${num(stock)}.`;
+  if (bulk && isLot) {
+    if (mq < 2 || mq > Math.max(q, 2)) errs.minQty = `Entre 2 et ${num(q)}.`;
+    if (bulkPrice === '' || !(bp < p)) errs.bulkPrice = 'Doit être inférieur au prix normal.';
+  }
+  const bad = Object.keys(errs).length > 0 || price === '';
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (bad) return;
+    const body: Record<string, unknown> = { price: p };
+    if (isLot) body.qty = q;
+    if (bulk && isLot) { body.bulkMinQty = mq; body.bulkPrice = bp; }
+    const r = await run(() => api.post(`/animals/${a.id}/listing`, body), cur ? 'Annonce mise à jour' : 'Annonce publiée');
+    if (r) { onDone(); onClose(); }
+  };
   return (
-    <Modal title="Mettre en vente sur le marché" onClose={onClose}>
+    <Modal title={cur ? "Modifier l'annonce" : 'Mettre en vente sur le marché'} onClose={onClose}>
       <form className="form" onSubmit={submit}>
-        <Field label="Prix demandé en FCFA" hint="Visible par les acheteurs : nom, espèce, zone et prix. Pas votre téléphone.">{(id) => <input id={id} type="number" min={0} value={price} onChange={(e) => setPrice(e.target.value)} required inputMode="numeric" />}</Field>
-        <Footer onClose={onClose} busy={busy} label="Publier l'annonce" />
+        {isLot && <Field label={`Combien en mettre en vente ? (lot de ${unitsLabel(a.species, stock)})`} error={errs.qty} hint="Le reste de votre lot n'est pas proposé à la vente.">{(id) => <input id={id} type="number" min={1} max={stock} inputMode="numeric" value={qty} onChange={(e) => setQty(e.target.value)} required />}</Field>}
+        <Field label={isLot ? "Prix à l'unité en FCFA" : 'Prix demandé en FCFA'} hint="Visible par les acheteurs : nom, espèce, zone et prix. Pas votre téléphone.">{(id) => <input id={id} type="number" min={0} value={price} onChange={(e) => setPrice(e.target.value)} required inputMode="numeric" />}</Field>
+        {isLot && (
+          <>
+            <label className="switch"><input type="checkbox" checked={bulk} onChange={(e) => setBulk(e.target.checked)} /> <span><b>Prix réduit à partir d'un certain nombre</b><br /><span className="mute">Pour encourager les achats en gros.</span></span></label>
+            {bulk && (
+              <div className="grid2">
+                <Field label="À partir de combien ?" error={errs.minQty}>{(id) => <input id={id} type="number" min={2} inputMode="numeric" value={minQty} onChange={(e) => setMinQty(e.target.value)} required />}</Field>
+                <Field label="Prix réduit à l'unité (FCFA)" error={errs.bulkPrice}>{(id) => <input id={id} type="number" min={0} inputMode="numeric" value={bulkPrice} onChange={(e) => setBulkPrice(e.target.value)} required />}</Field>
+              </div>
+            )}
+          </>
+        )}
+        {price !== '' && (
+          <div className="banner info" role="status" aria-live="polite">
+            {isLot ? <>Si tout est vendu : <b>{unitsLabel(a.species, q)} × {fcfa(p)} = {fcfa(q * p)}</b>{bulk && !errs.minQty && !errs.bulkPrice && mq >= 2 && <><br />Dès {num(mq)} : {fcfa(bp)} l'unité, soit {fcfa(mq * bp)} pour {unitsLabel(a.species, mq)}.</>}</> : <>Prix de l'animal : <b>{fcfa(p)}</b></>}
+          </div>
+        )}
+        <div className="actions end"><button type="button" className="btn" onClick={onClose}>Annuler</button><button className="btn pri" disabled={busy || bad}>{busy ? 'Envoi…' : cur ? 'Enregistrer' : "Publier l'annonce"}</button></div>
       </form>
     </Modal>
   );
@@ -253,14 +294,36 @@ function InviteModal({ a, onClose, onDone }: { a: Animal; onClose: () => void; o
   );
 }
 
+/** Réduit la photo avant l'envoi (1280 px, JPEG) : une photo de téléphone fait plusieurs Mo, l'envoi doit rester léger en 3G. */
+async function shrink(file: File): Promise<string> {
+  const bmp = await createImageBitmap(file);
+  const k = Math.min(1, 1280 / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+  c.getContext('2d')!.drawImage(bmp, 0, 0, c.width, c.height);
+  const blob = await new Promise<Blob | null>((ok) => c.toBlob(ok, 'image/jpeg', 0.82));
+  if (!blob) throw new Error('Image illisible.');
+  return await new Promise<string>((ok, ko) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1] ?? ''); r.onerror = () => ko(r.error); r.readAsDataURL(blob); });
+}
+
 function PhotoModal({ a, onClose, onDone }: { a: Animal; onClose: () => void; onDone: () => void }) {
+  const { user } = useAuth();
+  const canUpload = a.owner.id === user!.id;
   const [url, setUrl] = useState('');
+  const [file, setFile] = useState<File | null>(null);
   const { busy, run } = useAction();
-  const submit = async (e: React.FormEvent) => { e.preventDefault(); const r = await run(() => api.post(`/animals/${a.id}/photos`, { url: url.trim() }), 'Photo ajoutée'); if (r) { onDone(); onClose(); } };
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const r = file
+      ? await run(async () => api.post(`/animals/${a.id}/photos/upload`, { contentType: 'image/jpeg', data: await shrink(file) }), 'Photo ajoutée')
+      : await run(() => api.post(`/animals/${a.id}/photos`, { url: url.trim() }), 'Photo ajoutée');
+    if (r) { onDone(); onClose(); }
+  };
   return (
     <Modal title="Ajouter une photo" onClose={onClose}>
       <form className="form" onSubmit={submit}>
-        <Field label="Adresse de la photo (https://…)" hint="Pour l'instant, la photo doit déjà être en ligne. L'envoi depuis le téléphone viendra plus tard.">{(id) => <input id={id} type="url" value={url} onChange={(e) => setUrl(e.target.value)} required placeholder="https://" />}</Field>
+        {canUpload && <Field label="Prendre ou choisir une photo" hint="Elle est réduite automatiquement avant l'envoi. Il faut du réseau.">{(id) => <input id={id} type="file" accept="image/*" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />}</Field>}
+        {!file && <Field label={canUpload ? 'Ou une adresse de photo (https://…)' : 'Adresse de la photo (https://…)'}>{(id) => <input id={id} type="url" value={url} onChange={(e) => setUrl(e.target.value)} required={!canUpload} placeholder="https://" />}</Field>}
         <Footer onClose={onClose} busy={busy} label="Ajouter" />
       </form>
     </Modal>
@@ -290,7 +353,7 @@ function EditModal({ a, onClose, onDone }: { a: Animal; onClose: () => void; onD
   );
 }
 
-function Timeline({ items, onCorrect }: { items: HealthEvent[]; onCorrect?: (e: HealthEvent) => void }) {
+export function Timeline({ items, onCorrect }: { items: HealthEvent[]; onCorrect?: (e: HealthEvent) => void }) {
   if (!items.length) return <Empty icon="syringe" title="Aucun acte enregistré">Vaccins, soins et contrôles apparaîtront ici, du plus récent au plus ancien.</Empty>;
   return (
     <ul className="timeline">
@@ -321,13 +384,20 @@ export function AnimalPage({ id }: { id: string }) {
   const [correct, setCorrect] = useState<HealthEvent | undefined>();
   const a = useQuery(() => api.get<Animal>(`/animals/${id}`), [id]);
   const summary = useQuery(() => api.get<HealthSummary>(`/animals/${id}/health-summary`), [id]);
-  const events = useQuery(() => api.get<{ items: HealthEvent[] }>(`/animals/${id}/health-events`), [id]);
-  const cases = useQuery(() => api.get<{ items: Case[] }>(`/animals/${id}/cases`), [id]);
-  const flows = useQuery(() => api.get<{ items: Flow[] }>(`/animals/${id}/flows`), [id]);
+  const E0 = { eq: '', etype: '', efrom: '', eto: '', esigned: '', eorder: 'desc' };
+  const C0 = { q: '', status: '', from: '', to: '' };
+  const M0 = { q: '', type: '', from: '', to: '', order: 'desc' };
+  const [ev, setEv] = useState(E0);
+  const [cf, setCf] = useState(C0);
+  const [mf, setMf] = useState(M0);
+  const events = useQuery(() => api.get<{ items: HealthEvent[] }>(`/animals/${id}/health-events${qs({ q: ev.eq, type: ev.etype, from: ev.efrom, to: ev.eto, signed: ev.esigned, order: ev.eorder })}`), [id, ev.eq, ev.etype, ev.efrom, ev.eto, ev.esigned, ev.eorder]);
+  const cases = useQuery(() => api.get<{ items: Case[] }>(`/animals/${id}/cases${qs({ ...cf, order: 'desc' })}`), [id, cf.q, cf.status, cf.from, cf.to]);
+  const flows = useQuery(() => api.get<{ items: Flow[] }>(`/animals/${id}/flows${qs(mf)}`), [id, mf.q, mf.type, mf.from, mf.to, mf.order]);
+  const casesAll = useQuery(() => api.get<{ items: Case[] }>(`/animals/${id}/cases`), [id]);
   const grants = useQuery(() => api.get<{ items: Grant[] }>(`/animals/${id}/access`), [id]);
   const { busy, run } = useAction();
 
-  const reload = () => { a.reload(); summary.reload(); events.reload(); cases.reload(); flows.reload(); grants.reload(); };
+  const reload = () => { a.reload(); summary.reload(); events.reload(); cases.reload(); casesAll.reload(); flows.reload(); grants.reload(); };
 
   const wanted = query.get('do');
   useEffect(() => {
@@ -339,10 +409,15 @@ export function AnimalPage({ id }: { id: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [a.data?.id, wanted]);
 
+  // Un ancien propriétaire n'a plus accès à la fiche (404) : s'il l'a eue, on l'envoie vers son dossier archivé.
+  const gone = a.error instanceof ApiError && a.error.status === 404 && user!.role === 'eleveur';
+  const arch = useQuery(() => (gone ? api.get<{ animal: { id: string } }>(`/animals/${id}/archive`) : Promise.resolve(null)), [id, gone]);
+  useEffect(() => { if (arch.data) navigate(`/archives/${id}`, true); }, [arch.data, id]);
   if (a.loading && !a.data) return <Spinner />;
+  if (gone && (arch.loading || arch.data)) return <Spinner />;
   if (a.error || !a.data) return <ErrorBox error={a.error} retry={a.reload} />;
   const an = a.data;
-  const isOwner = user!.role === 'eleveur' && an.owner.id === user!.id;
+  const isOwner = (user!.role === 'eleveur' || user!.role === 'particulier') && an.owner.id === user!.id;
   const isVet = user!.role === 'vet';
   const locked = an.status !== 'actif';
   const stolen = an.status === 'vole';
@@ -355,12 +430,12 @@ export function AnimalPage({ id }: { id: string }) {
   const rmPhoto = async (pid: string) => { const r = await run(() => api.del(`/animals/${id}/photos/${pid}`), 'Photo retirée'); if (r !== undefined) reload(); };
   const closeCase = async (c: Case, status: 'suivi' | 'gueri' | 'clos') => {
     const r = await run(() => submitOp('case.update', { caseId: c.id, status }, `Cas ${CASE_STATUS[status]}`));
-    if (r) { toast(r.queued ? 'Mise à jour en attente de réseau.' : 'Cas mis à jour', r.queued ? 'info' : 'ok'); cases.reload(); }
+    if (r) { toast(r.queued ? 'Mise à jour en attente de réseau.' : 'Cas mis à jour', r.queued ? 'info' : 'ok'); cases.reload(); casesAll.reload(); }
   };
 
   const tabs: [Tab, string][] = [['resume', 'Résumé'], ['sante', 'Santé'], ['mouvements', 'Mouvements'], ['acces', 'Accès'], ['photos', 'Photos']];
   const s = summary.data;
-  const openCases = cases.data?.items.filter((c) => c.status === 'ouvert' || c.status === 'suivi') ?? [];
+  const openCases = casesAll.data?.items.filter((c) => c.status === 'ouvert' || c.status === 'suivi') ?? [];
 
   const act = (label: string, name: ModalName, cls = '', icon = 'plus'): ReactNode => <button className={`btn ${cls}`} onClick={() => setModal(name)}><Icon name={icon} size={18} /> {label}</button>;
 
@@ -377,6 +452,10 @@ export function AnimalPage({ id }: { id: string }) {
         </div>
         <QrCode text={an.code} size={120} />
       </header>
+      <div className="actions" style={{ marginBottom: '.8rem' }}>
+        <Link to={`/imprimer/carnet/${an.id}`} className="btn sm"><Icon name="download" size={16} /> Carnet imprimable (PDF)</Link>
+        {isOwner && an.status === 'vendu' && <Link to={`/imprimer/certificat/${an.id}`} className="btn sm">Certificat de vente</Link>}
+      </div>
 
       {stolen && <div className="banner err" role="alert"><b>Animal déclaré volé.</b> La fiche est bloquée.{isOwner && ' Si vous l\'avez retrouvé, déclarez-le.'}</div>}
       {an.status !== 'actif' && !stolen && <div className="banner info">Cette fiche est clôturée ({STATUS[an.status].label.toLowerCase()}). Elle reste consultable.</div>}
@@ -421,8 +500,10 @@ export function AnimalPage({ id }: { id: string }) {
           </Card>
           {isOwner && an.status === 'actif' && (
             <Card title="Marché">
-              <p className="mute">Publiez une annonce pour être contacté par des acheteurs.</p>
-              <div className="actions">{act('Mettre en vente', 'listing', '', 'coin')}<button className="btn" disabled={busy} onClick={unlist}>Retirer l'annonce</button></div>
+              {an.listing
+                ? <p>En vente : <b>{an.kind === 'lot' ? `${unitsLabel(an.species, an.listing.qty)} à ${fcfa(an.listing.price)} l'unité` : fcfa(an.listing.price)}</b>{an.listing.bulkMinQty != null && an.listing.bulkPrice != null && <><br /><span className="mute">{fcfa(an.listing.bulkPrice)} l'unité dès {num(an.listing.bulkMinQty)} achetés</span></>}</p>
+                : <p className="mute">Publiez une annonce pour être contacté par des acheteurs.</p>}
+              <div className="actions">{act(an.listing ? "Modifier l'annonce" : 'Mettre en vente', 'listing', '', 'coin')}{an.listing && <button className="btn" disabled={busy} onClick={unlist}>Retirer l'annonce</button>}</div>
             </Card>
           )}
           {onSale}
@@ -431,9 +512,30 @@ export function AnimalPage({ id }: { id: string }) {
 
       {tab === 'sante' && (
         <>
+          <div className="filters">
+            <SearchBox value={ev.eq} onChange={(eq) => setEv((x) => ({ ...x, eq }))} placeholder="Chercher un acte, une note, un nom…" />
+            <select aria-label="Type d'acte" value={ev.etype} onChange={(e) => setEv({ ...ev, etype: e.target.value })}>
+              <option value="">Tous les actes</option>{Object.entries(EVENT_TYPE).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </select>
+            <select aria-label="Signature" value={ev.esigned} onChange={(e) => setEv({ ...ev, esigned: e.target.value })}>
+              <option value="">Signés ou non</option><option value="true">Signés par un vétérinaire</option><option value="false">Non signés</option>
+            </select>
+            <select aria-label="Trier" value={ev.eorder} onChange={(e) => setEv({ ...ev, eorder: e.target.value })}>
+              <option value="desc">Plus récents d'abord</option><option value="asc">Plus anciens d'abord</option>
+            </select>
+            <DateRange from={ev.efrom} to={ev.eto} onChange={(efrom, eto) => setEv({ ...ev, efrom, eto })} />
+            <ResetFilters count={JSON.stringify(ev) === JSON.stringify(E0) ? 0 : 1} onReset={() => setEv(E0)} />
+          </div>
           <Card title="Historique de santé"><Timeline items={events.data?.items ?? []} onCorrect={canRecord ? (e) => { setCorrect(e); setModal('event'); } : undefined} /></Card>
           <Card title="Cas de maladie">
-            {!cases.data?.items.length ? <p className="mute">Aucun cas signalé.</p> : (
+            <div className="filters">
+              <SearchBox value={cf.q} onChange={(q) => setCf((x) => ({ ...x, q }))} placeholder="Maladie, symptôme, note…" label="Rechercher un cas" />
+              <select aria-label="État du cas" value={cf.status} onChange={(e) => setCf({ ...cf, status: e.target.value })}>
+                <option value="">Tous les états</option>{Object.entries(CASE_STATUS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+              </select>
+              <DateRange label="Cas ouverts" from={cf.from} to={cf.to} onChange={(from, to) => setCf({ ...cf, from, to })} />
+            </div>
+            {!cases.data?.items.length ? <p className="mute">Aucun cas{JSON.stringify(cf) === JSON.stringify(C0) ? ' signalé' : ' avec ces filtres'}.</p> : (
               <ul className="rows">
                 {cases.data.items.map((c) => (
                   <li key={c.id} className="row">
@@ -455,6 +557,16 @@ export function AnimalPage({ id }: { id: string }) {
 
       {tab === 'mouvements' && (
         <Card title="Mouvements">
+          <div className="filters">
+            <SearchBox value={mf.q} onChange={(q) => setMf((x) => ({ ...x, q }))} placeholder="Acheteur, note…" label="Rechercher un mouvement" />
+            <select aria-label="Type de mouvement" value={mf.type} onChange={(e) => setMf({ ...mf, type: e.target.value })}>
+              <option value="">Tous les mouvements</option>{Object.entries(FLOW_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </select>
+            <select aria-label="Trier" value={mf.order} onChange={(e) => setMf({ ...mf, order: e.target.value })}>
+              <option value="desc">Plus récents d'abord</option><option value="asc">Plus anciens d'abord</option>
+            </select>
+            <DateRange from={mf.from} to={mf.to} onChange={(from, to) => setMf({ ...mf, from, to })} />
+          </div>
           {!flows.data?.items.length ? <Empty icon="swap" title="Aucun mouvement" /> : (
             <ul className="rows">{flows.data.items.map((f) => <li key={f.id} className="row"><div className="grow"><b>{FLOW_LABEL[f.type] ?? f.type}</b>{f.qty != null && ` · ${f.qty}`}{f.counterpart && ` · ${f.counterpart}`}<br /><span className="mute">{date(f.occurredOn)} · {f.recordedBy.name}{f.note ? ` · ${f.note}` : ''}</span></div></li>)}</ul>
           )}
@@ -473,7 +585,7 @@ export function AnimalPage({ id }: { id: string }) {
       {tab === 'photos' && (
         <Card title="Photos" actions={(isOwner || isVet) && !locked ? <button className="btn sm pri" onClick={() => setModal('photo')}>Ajouter</button> : undefined}>
           {!an.photos.length ? <Empty icon="image" title="Aucune photo" /> : (
-            <div className="photos">{an.photos.map((p) => <figure key={p.id}><img src={p.url} alt={`Photo de ${an.name}`} loading="lazy" />{isOwner && <button className="btn sm" onClick={() => rmPhoto(p.id)}>Retirer</button>}</figure>)}</div>
+            <div className="photos">{an.photos.map((p) => <figure key={p.id}><img src={photoSrc(p.url)} alt={`Photo de ${an.name}`} loading="lazy" />{isOwner && <button className="btn sm" onClick={() => rmPhoto(p.id)}>Retirer</button>}</figure>)}</div>
           )}
         </Card>
       )}

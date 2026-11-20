@@ -4,9 +4,10 @@ import { iso, writeAudit } from '../../lib/audit.js';
 import { dateStr } from '../../lib/dates.js';
 import { createAlert } from '../../lib/alerts.js';
 import type { AuthContext } from '../../plugins/auth.js';
-import { loadVisible, type AccessLevel } from '../animals/service.js';
+import { loadVisible, nextCode, type AccessLevel } from '../animals/service.js';
 import { withdrawalUntil } from '../health/service.js';
-import type { MarketQuery, SellBody, SlaughterBody, TheftBody, TransferBody } from './schemas.js';
+import type { FlowsQuery, ListingBody, MarketQuery, SellBody, SlaughterBody, TheftBody, TransferBody } from './schemas.js';
+import { escapeLike, pusher } from '../../lib/filters.js';
 
 /** Propriétaire seulement ; un animal volé est bloqué (RG4) ; seul un animal actif peut bouger. */
 function assertMovable(row: Row, level: AccessLevel): void {
@@ -31,7 +32,7 @@ const stateOf = async (q: Queryable, id: string) =>
 /** Change le propriétaire. L'historique de santé et les flux restent attachés à l'animal (RG3) ; les accès vétérinaires sont retirés. */
 async function doTransfer(q: Queryable, auth: AuthContext, row: Row, toUserId: string, occurredOn: string | null): Promise<string> {
   const to = (await q.query('SELECT id, role, zone_id FROM users WHERE id = $1', [toUserId]))[0];
-  if (!to || to.role !== 'eleveur') throw invalid("Le destinataire doit être un éleveur inscrit.", [{ path: ['toUserId'], message: 'Éleveur inconnu.' }]);
+  if (!to || (to.role !== 'eleveur' && to.role !== 'particulier')) throw invalid("Le destinataire doit être un éleveur ou un particulier inscrit.", [{ path: ['toUserId'], message: 'Éleveur inconnu.' }]);
   if (to.id === auth.userId) throw invalid('Vous ne pouvez pas vous transférer un animal à vous-même.', [{ path: ['toUserId'], message: 'Destinataire identique.' }]);
   const t = await q.query<{ id: string }>(
     'INSERT INTO transfers (animal_id, from_user, to_user, occurred_on) VALUES ($1,$2,$3,COALESCE($4::date, current_date)) RETURNING id',
@@ -46,7 +47,12 @@ async function doTransfer(q: Queryable, auth: AuthContext, row: Row, toUserId: s
 }
 
 export async function sell(db: Db, auth: AuthContext, animalId: string, b: SellBody) {
-  return db.tx(async (q) => {
+  return db.tx((q) => sellTx(q, auth, animalId, b));
+}
+
+/** Vente dans une transaction déjà ouverte (utilisée aussi quand l'éleveur finalise une demande d'achat). */
+export async function sellTx(q: Queryable, auth: AuthContext, animalId: string, b: SellBody) {
+  {
     const { row, level } = await loadVisible(q, auth, animalId, true);
     assertMovable(row, level);
     await assertNoWithdrawal(q, animalId);
@@ -77,7 +83,59 @@ export async function sell(db: Db, auth: AuthContext, animalId: string, b: SellB
     await writeAudit(q, { actorId: auth.userId, animalId, action: 'animal.sold', detail: { qty, buyerId: b.buyerId ?? null, price: b.price ?? null } });
     const s = await stateOf(q, animalId);
     return { animalId, sold: qty, status: s.status as string, qty: (s.qty ?? null) as number | null, ownerId: s.owner_id as string, transferId };
-  });
+  }
+}
+
+/**
+ * Vente d'une partie d'un lot à un acheteur inscrit : la quantité vendue quitte le lot du vendeur et devient un nouveau lot
+ * sur le compte de l'acheteur, avec les vaccins et soins déjà enregistrés (le carnet suit les animaux, RG3).
+ */
+export async function sellPartToBuyerTx(
+  q: Queryable, auth: AuthContext, animalId: string, buyerId: string, qty: number, total: number, occurredOn?: string,
+) {
+  const { row, level } = await loadVisible(q, auth, animalId, true);
+  assertMovable(row, level);
+  await assertNoWithdrawal(q, animalId);
+  if (row.kind !== 'lot') throw invalid('Seul un lot peut être vendu en partie.', [{ path: ['qty'], message: 'Animal seul.' }]);
+  if (qty > row.qty) throw conflict('qty_exceeds_stock', `Il ne reste que ${row.qty} animaux dans ce lot.`, { available: row.qty });
+  if (qty === row.qty) throw invalid("Cette vente porte sur tout le lot : utilisez la vente complète.", [{ path: ['qty'], message: 'Quantité égale au stock.' }]);
+  const buyer = (await q.query('SELECT id, role, name, zone_id FROM users WHERE id = $1', [buyerId]))[0];
+  if (!buyer || (buyer.role !== 'eleveur' && buyer.role !== 'particulier') || buyer.id === auth.userId) {
+    throw invalid("Le destinataire doit être un éleveur ou un particulier inscrit.", [{ path: ['buyerId'], message: 'Acheteur invalide.' }]);
+  }
+  await q.query(
+    `INSERT INTO flows (animal_id, type, qty, counterpart, note, occurred_on, recorded_by)
+     VALUES ($1,'vente',$2,$3,$4,COALESCE($5::date, current_date),$6)`,
+    [animalId, qty, buyer.name, `Prix : ${total} FCFA`, occurredOn ?? null, auth.userId],
+  );
+  // Le lot du vendeur diminue ; l'annonce aussi, et elle disparaît quand il n'y a plus rien à vendre.
+  await q.query(
+    `UPDATE animals SET qty = qty - $2, listing_qty = GREATEST(COALESCE(listing_qty, 0) - $2, 0),
+       listed_at = CASE WHEN COALESCE(listing_qty, 0) - $2 > 0 THEN listed_at END, updated_at = now() WHERE id = $1`,
+    [animalId, qty],
+  );
+  const code = await nextCode(q, row.species);
+  const child = (await q.query<{ id: string }>(
+    `INSERT INTO animals (public_code, kind, species, breed, name, born_on, owner_id, zone_id, qty, qty_initial, avg_weight_kg, split_from)
+     VALUES ($1,'lot',$2,$3,$4,$5,$6,$7,$8,$8,$9,$10) RETURNING id`,
+    [code, row.species, row.breed, row.name, row.born_on, buyerId, buyer.zone_id ?? row.zone_id, qty, row.avg_weight_kg, animalId],
+  ))[0]!.id;
+  await q.query(
+    "INSERT INTO flows (animal_id, type, qty, counterpart, note, recorded_by) VALUES ($1,'entree',$2,$3,$4,$5)",
+    [child, qty, (await q.query('SELECT name FROM users WHERE id = $1', [auth.userId]))[0]?.name ?? null, `Acheté : ${qty} têtes du lot ${row.public_code}`, buyerId],
+  );
+  await q.query(
+    `INSERT INTO health_events (animal_id, type, label, done_on, next_due_on, withdrawal_days, vet_id, recorded_by, note)
+     SELECT $1, e.type, e.label, e.done_on, e.next_due_on, e.withdrawal_days, e.vet_id, e.recorded_by,
+            CASE WHEN e.note IS NULL THEN 'Hérité du lot ' || $3::text ELSE e.note || ' · hérité du lot ' || $3::text END
+     FROM health_events e WHERE e.animal_id = $2 AND NOT EXISTS (SELECT 1 FROM health_events c WHERE c.corrects_event_id = e.id)
+     ORDER BY e.done_on, e.created_at`,
+    [child, animalId, row.public_code],
+  );
+  await writeAudit(q, { actorId: auth.userId, animalId, action: 'animal.sold', detail: { qty, buyerId, price: total, splitTo: child } });
+  await writeAudit(q, { actorId: auth.userId, animalId: child, action: 'animal.split_received', detail: { qty, from: animalId, price: total } });
+  const s = await stateOf(q, animalId);
+  return { animalId, sold: qty, newAnimalId: child, status: s.status as string, qty: (s.qty ?? null) as number | null };
 }
 
 export async function slaughter(db: Db, auth: AuthContext, animalId: string, b: SlaughterBody) {
@@ -156,12 +214,23 @@ export async function declareRecovery(db: Db, auth: AuthContext, animalId: strin
   });
 }
 
-export async function listFlows(db: Db, auth: AuthContext, animalId: string) {
+export async function listFlows(db: Db, auth: AuthContext, animalId: string, f: FlowsQuery) {
   await loadVisible(db, auth, animalId);
+  const params: unknown[] = [animalId];
+  const where = ['f.animal_id = $1'];
+  const p = pusher(params);
+  if (f.type) where.push(`f.type = $${p(f.type)}`);
+  if (f.from) where.push(`f.occurred_on >= $${p(f.from)}::date`);
+  if (f.to) where.push(`f.occurred_on <= $${p(f.to)}::date`);
+  if (f.q) {
+    const n = p(`%${escapeLike(f.q)}%`);
+    where.push(`(f.counterpart ILIKE $${n} OR f.note ILIKE $${n} OR u.name ILIKE $${n})`);
+  }
+  const dir = f.order === 'asc' ? 'ASC' : 'DESC';
   const rows = await db.query(
     `SELECT f.*, u.name AS recorder_name FROM flows f JOIN users u ON u.id = f.recorded_by
-     WHERE f.animal_id = $1 ORDER BY f.occurred_on DESC, f.created_at DESC, f.id`,
-    [animalId],
+     WHERE ${where.join(' AND ')} ORDER BY f.occurred_on ${dir}, f.created_at ${dir}, f.id`,
+    params,
   );
   return {
     items: rows.map((r) => ({
@@ -179,15 +248,28 @@ export async function listFlows(db: Db, auth: AuthContext, animalId: string) {
 
 // ---------- Marché ----------
 
-export async function putOnMarket(db: Db, auth: AuthContext, animalId: string, price: number) {
+/** Mise en vente à l'unité : `qty` animaux du lot au prix `price` pièce, avec un prix réduit éventuel à partir d'un seuil. */
+export async function putOnMarket(db: Db, auth: AuthContext, animalId: string, b: ListingBody) {
   return db.tx(async (q) => {
     const { row, level } = await loadVisible(q, auth, animalId, true);
     assertMovable(row, level);
     await assertNoWithdrawal(q, animalId);
     if (row.kind === 'lot' && row.qty === 0) throw conflict('animal_not_active', 'Ce lot est vide.');
-    await q.query('UPDATE animals SET listed_at = now(), listing_price = $2, updated_at = now() WHERE id = $1', [animalId, price]);
-    await writeAudit(q, { actorId: auth.userId, animalId, action: 'market.listed', detail: { price } });
-    return { animalId, price, listed: true };
+    const stock: number = row.kind === 'lot' ? row.qty : 1;
+    const qty = b.qty ?? stock;
+    if (row.kind === 'individual' && (b.qty !== undefined && b.qty !== 1 || b.bulkMinQty !== undefined)) {
+      throw invalid("Un animal seul se vend à l'unité, sans prix dégressif.", [{ path: ['qty'], message: 'Doit valoir 1.' }]);
+    }
+    if (qty > stock) throw conflict('qty_exceeds_stock', `Il ne reste que ${stock} animaux dans ce lot.`, { available: stock });
+    if (b.bulkMinQty !== undefined && b.bulkMinQty > qty) throw invalid('Le seuil dépasse la quantité mise en vente.', [{ path: ['bulkMinQty'], message: 'Seuil trop élevé.' }]);
+    const reserved = Number((await q.query<{ n: string }>("SELECT COALESCE(sum(agreed_qty), 0)::text AS n FROM purchase_requests WHERE animal_id = $1 AND status = 'acceptee'", [animalId]))[0]!.n);
+    if (qty < reserved) throw conflict('qty_below_reserved', `${reserved} animaux sont déjà réservés par des accords en cours.`, { reserved });
+    await q.query(
+      'UPDATE animals SET listed_at = COALESCE(listed_at, now()), listing_price = $2, listing_qty = $3, bulk_min_qty = $4, bulk_price = $5, updated_at = now() WHERE id = $1',
+      [animalId, b.price, qty, b.bulkMinQty ?? null, b.bulkPrice ?? null],
+    );
+    await writeAudit(q, { actorId: auth.userId, animalId, action: 'market.listed', detail: { price: b.price, qty, bulkMinQty: b.bulkMinQty ?? null, bulkPrice: b.bulkPrice ?? null } });
+    return { animalId, price: b.price, qty, bulkMinQty: b.bulkMinQty ?? null, bulkPrice: b.bulkPrice ?? null, listed: true };
   });
 }
 
@@ -241,6 +323,9 @@ export async function market(db: Db, f: MarketQuery) {
       qty: (r.qty ?? null) as number | null,
       avgWeightKg: r.avg_weight_kg == null ? null : Number(r.avg_weight_kg),
       price: Number(r.listing_price),
+      listingQty: r.listing_qty == null ? null : Number(r.listing_qty),
+      bulkMinQty: r.bulk_min_qty == null ? null : Number(r.bulk_min_qty),
+      bulkPrice: r.bulk_price == null ? null : Number(r.bulk_price),
       listedAt: iso(r.listed_at),
       zone: r.zone_name as string,
       ownerName: r.owner_name as string,
