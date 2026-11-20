@@ -6,12 +6,15 @@ import type { Zone } from '../api/types';
 import { Field, Icon, useQuery } from '../ui/kit';
 import { Link, navigate, useLoc } from '../lib/router';
 import { errorText } from '../lib/format';
+import { LangPicker, useLang } from '../i18n';
 
 function AuthFrame({ title, sub, children }: { title: string; sub: string; children: React.ReactNode }) {
+  const { t } = useLang();
   return (
     <div className="authpage">
       <div className="authcard">
-        <div className="logo big"><i><Icon name="heart" size={22} /></i> Carnet Bétail</div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}><LangPicker /></div>
+        <div className="logo big"><i><Icon name="heart" size={22} /></i> {t('app.name')}</div>
         <h1>{title}</h1>
         <p className="mute">{sub}</p>
         {children}
@@ -24,6 +27,7 @@ const PAD = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', '⌫'];
 
 export function LoginPage() {
   const { login, pinLogin } = useAuth();
+  const { t } = useLang();
   const [mode, setMode] = useState<'pwd' | 'pin'>(() => (store.get('carnet.loginMode') === 'pin' ? 'pin' : 'pwd'));
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
@@ -57,23 +61,23 @@ export function LoginPage() {
   };
 
   return (
-    <AuthFrame title="Connexion" sub="Suivez la santé de votre bétail, même sans réseau.">
+    <AuthFrame title={t('auth.login')} sub={t('auth.loginSub')}>
       {justReset && <p className="banner info" role="status">Mot de passe changé. Vous pouvez vous connecter.</p>}
       <div className="seg" role="tablist" aria-label="Mode de connexion">
-        <button role="tab" aria-selected={mode === 'pwd'} onClick={() => choose('pwd')}>Mot de passe</button>
-        <button role="tab" aria-selected={mode === 'pin'} onClick={() => choose('pin')}>Code à 4 chiffres</button>
+        <button role="tab" aria-selected={mode === 'pwd'} onClick={() => choose('pwd')}>{t('auth.password')}</button>
+        <button role="tab" aria-selected={mode === 'pin'} onClick={() => choose('pin')}>{t('auth.pin')}</button>
       </div>
       {mode === 'pwd' ? (
         <form onSubmit={submitPwd} className="stack">
-          <Field label="Téléphone ou e-mail">{(id) => <input id={id} value={identifier} onChange={(e) => setIdentifier(e.target.value)} autoComplete="username" inputMode="email" required />}</Field>
-          <Field label="Mot de passe">{(id) => <input id={id} type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />}</Field>
+          <Field label={t('auth.phoneOrEmail')}>{(id) => <input id={id} value={identifier} onChange={(e) => setIdentifier(e.target.value)} autoComplete="username" inputMode="email" required />}</Field>
+          <Field label={t('auth.password')}>{(id) => <input id={id} type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />}</Field>
           {error && <p className="err" role="alert">{error}</p>}
-          <button className="btn pri block" disabled={busy}>{busy ? 'Connexion…' : 'Se connecter'}</button>
-          <p className="center"><Link to="/mot-de-passe-oublie">Mot de passe oublié ?</Link></p>
+          <button className="btn pri block" disabled={busy}>{busy ? t('common.loading') : t('auth.submit')}</button>
+          <p className="center"><Link to="/mot-de-passe-oublie">{t('auth.forgot')}</Link></p>
         </form>
       ) : (
         <div className="stack">
-          <Field label="Votre numéro de téléphone" hint="Réservé aux éleveurs.">{(id) => <input id={id} value={phone} onChange={(e) => setPhone(e.target.value)} inputMode="tel" autoComplete="tel" placeholder="07 12 34 56 78" />}</Field>
+          <Field label={t('auth.yourPhone')} hint="Réservé aux éleveurs.">{(id) => <input id={id} value={phone} onChange={(e) => setPhone(e.target.value)} inputMode="tel" autoComplete="tel" placeholder="07 12 34 56 78" />}</Field>
           <div className="pindots" aria-label={`${pin.length} chiffres saisis sur 4`}>{[0, 1, 2, 3].map((i) => <i key={i} className={i < pin.length ? 'on' : ''} />)}</div>
           {error && <p className="err center" role="alert">{error}</p>}
           <div className="pad">
@@ -83,7 +87,7 @@ export function LoginPage() {
           </div>
         </div>
       )}
-      <p className="center mute">Pas encore de compte ? <Link to="/inscription">Créer un compte</Link></p>
+      <p className="center mute">{t('auth.noAccount')} <Link to="/inscription">{t('auth.createAccount')}</Link></p>
     </AuthFrame>
   );
 }

@@ -7,7 +7,11 @@
     "dev": "node scripts/dev.mjs",
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
-    "test:e2e": "node test/e2e.mjs"
+    "test:e2e": "node test/e2e.mjs",
+    "i18n:export": "node scripts/i18n.mjs export",
+    "i18n:import": "node scripts/i18n.mjs import",
+    "i18n:check": "node scripts/i18n.mjs check",
+    "test:simple": "node test/simple.mjs"
   },
   "dependencies": {
     "react": "^19.0.0",

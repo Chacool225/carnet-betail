@@ -19,6 +19,7 @@ import { ProfilePage, applyTheme } from './pages/profile';
 import { QueuePage } from './pages/queue';
 import { StatsPage, VetsPage } from './pages/admin';
 import type { Role } from './api/types';
+import { LangProvider } from './i18n';
 
 const AUTH_ROUTES = ['/connexion', '/inscription', '/mot-de-passe-oublie'];
 const ONLY: Record<string, Role[]> = { '/animaux/nouveau': ['eleveur'], '/marche': ['eleveur', 'particulier'], '/demandes': ['eleveur', 'particulier'], '/stats': ['autorite', 'agent'], '/veterinaires': ['autorite'], '/audit': ['autorite'] };
@@ -76,11 +77,13 @@ function Gate() {
 export function App() {
   return (
     <RouterProvider>
-      <ToastProvider>
-        <AuthProvider>
-          <Gate />
-        </AuthProvider>
-      </ToastProvider>
+      <LangProvider>
+        <ToastProvider>
+          <AuthProvider>
+            <Gate />
+          </AuthProvider>
+        </ToastProvider>
+      </LangProvider>
     </RouterProvider>
   );
 }

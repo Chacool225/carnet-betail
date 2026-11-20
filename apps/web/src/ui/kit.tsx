@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { playPhrase, useLang } from '../i18n';
 import { qrSvg } from '../lib/qr';
 import { errorText } from '../lib/format';
 
@@ -179,13 +180,25 @@ export function QrCode({ text, size = 140 }: { text: string; size?: number }) {
   return <div className="qr" dangerouslySetInnerHTML={{ __html: svg }} />;
 }
 
+/** Mode simple : dit la phrase toute seule à l'ouverture de l'écran (le téléphone ne peut parler qu'après un premier toucher, ce qui est le cas après la connexion). */
+export function useAutoSpeak(on: boolean, k: string): void {
+  const { lang, t } = useLang();
+  useEffect(() => {
+    if (!on) return;
+    const id = setTimeout(() => playPhrase(lang, k, t(k)), 350);
+    return () => { clearTimeout(id); if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.cancel(); };
+  }, [on, k, lang]); // eslint-disable-line react-hooks/exhaustive-deps
+}
+
 /** Lecture à voix haute (mode simple) : la synthèse vocale du téléphone, si elle existe. */
-export function Speak({ text }: { text: string }) {
-  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return null;
+export function Speak({ text, k }: { text: string; k?: string }) {
+  const { lang, t } = useLang();
+  const shown = k ? t(k) : text;
+  if (typeof window === 'undefined' || (lang === 'fr' && !('speechSynthesis' in window))) return null;
   return (
-    <button className="icon-btn speak" aria-label={`Écouter : ${text}`} onClick={(e) => {
+    <button className="icon-btn speak" aria-label={`${t('common.listen')} : ${shown}`} onClick={(e) => {
       e.preventDefault(); e.stopPropagation();
-      const u = new SpeechSynthesisUtterance(text); u.lang = 'fr-FR'; window.speechSynthesis.cancel(); window.speechSynthesis.speak(u);
+      playPhrase(lang, k ?? text, shown);
     }}><Icon name="speaker" size={18} /></button>
   );
 }

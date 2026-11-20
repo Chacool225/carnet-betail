@@ -202,5 +202,5 @@ export function createMock({ staticDir } = {}) {
     if (!existsSync(f) || statSync(f).isDirectory()) f = join(staticDir, 'index.html');
     res.writeHead(200, { 'content-type': MIME[extname(f)] ?? 'application/octet-stream' }); res.end(readFileSync(f));
   }
-  return { server: createServer(handler), stats, animals };
+  return { server: createServer(handler), stats, animals, cases };
 }

@@ -1,10 +1,11 @@
 import { api, cachedGet, qs } from '../api/client';
 import type { AccessItem, AgentOverview, Alert, Page, Animal, Reminder, StatsOverview, ZoneStats } from '../api/types';
-import { Badge, Card, Empty, ErrorBox, Icon, PageHead, Spinner, Speak, Stat, useAction, useQuery } from '../ui/kit';
+import { Badge, Card, Empty, ErrorBox, Icon, PageHead, Spinner, Speak, Stat, useAction, useAutoSpeak, useQuery } from '../ui/kit';
 import { useAuth } from '../ui/auth';
 import { Link } from '../lib/router';
 import { date, num, pct, SPECIES } from '../lib/format';
 import { AlertList } from './alerts';
+import { useLang, type Key } from '../i18n';
 
 export function Home() {
   const { user } = useAuth();
@@ -66,34 +67,36 @@ function EleveurHome() {
   );
 }
 
-const TILES = [
-  { to: '/animaux', icon: '🐄', label: 'Mes animaux', say: 'Mes animaux' },
-  { to: '/animaux/nouveau', icon: '➕', label: 'Ajouter un animal', say: 'Ajouter un animal' },
-  { to: '/animaux?do=maladie', icon: '🤒', label: 'Un animal est malade', say: 'Un animal est malade' },
-  { to: '/scan', icon: '📷', label: 'Scanner', say: 'Scanner un animal' },
-  { to: '/marche', icon: '🛒', label: 'Marché', say: 'Voir le marché' },
-  { to: '/alertes', icon: '🔔', label: 'Alertes', say: 'Voir les alertes' },
+const TILES: { to: string; icon: string; label: Key; say: Key }[] = [
+  { to: '/animaux', icon: '🐄', label: 'tile.myAnimals', say: 'say.myAnimals' },
+  { to: '/animaux/nouveau', icon: '➕', label: 'tile.addAnimal', say: 'say.addAnimal' },
+  { to: '/animaux?do=maladie', icon: '🤒', label: 'tile.sick', say: 'say.sick' },
+  { to: '/scan', icon: '📷', label: 'tile.scan', say: 'say.scan' },
+  { to: '/marche', icon: '🛒', label: 'tile.market', say: 'say.market' },
+  { to: '/alertes', icon: '🔔', label: 'tile.alerts', say: 'say.alerts' },
 ];
 
 function SimpleHome() {
   const { user } = useAuth();
+  const { t } = useLang();
   const reminders = useQuery(() => cachedGet<{ items: Reminder[] }>('/reminders?days=7', user!.id), [], { cached: true });
   const late = reminders.data?.items.length ?? 0;
+  useAutoSpeak(user!.prefs.autoVoice !== false, 'say.home.hello');
   return (
     <>
-      <PageHead title={`Bonjour ${user!.name.split(' ')[0]}`} sub={late ? `${late} soin(s) ou vaccin(s) à faire cette semaine` : 'Que voulez-vous faire ?'}>
-        <Speak text={`Bonjour ${user!.name.split(' ')[0]}. Que voulez-vous faire ?`} />
+      <PageHead title={t('home.hello', { name: user!.name.split(' ')[0] })} sub={late ? `${late} soin(s) ou vaccin(s) à faire cette semaine` : t('home.whatToDo')}>
+        <Speak k="home.whatToDo" text="" />
       </PageHead>
       <div className="tiles">
-        {TILES.map((t) => (
-          <Link key={t.to} to={t.to} className="tile">
-            <span className="big" aria-hidden="true">{t.icon}</span>
-            <b>{t.label}</b>
-            <Speak text={t.say} />
+        {TILES.map((tl) => (
+          <Link key={tl.to} to={tl.to} className="tile">
+            <span className="big" aria-hidden="true">{tl.icon}</span>
+            <b>{t(tl.label)}</b>
+            <Speak k={tl.say} text="" />
           </Link>
         ))}
       </div>
-      {late > 0 && <Card title="Cette semaine"><Reminders items={reminders.data?.items ?? []} /></Card>}
+      {late > 0 && <Card title={t('home.thisWeek')}><Reminders items={reminders.data?.items ?? []} /></Card>}
     </>
   );
 }

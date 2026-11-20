@@ -5,30 +5,30 @@ import { Link, useLoc } from '../lib/router';
 import { queue, flushQueue } from '../api/offline';
 import { api } from '../api/client';
 import type { Role } from '../api/types';
-import { ROLE_LABEL } from '../lib/format';
+import { LangPicker, useLang, type Key } from '../i18n';
 
-const NAV: Record<Role, { to: string; label: string; icon: string }[]> = {
+const NAV: Record<Role, { to: string; label: Key; icon: string }[]> = {
   eleveur: [
-    { to: '/', label: 'Accueil', icon: 'home' }, { to: '/animaux', label: 'Animaux', icon: 'cow' }, { to: '/scan', label: 'Scanner', icon: 'scan' },
-    { to: '/marche', label: 'Marché', icon: 'shop' }, { to: '/alertes', label: 'Alertes', icon: 'bell' },
-    { to: '/historique', label: 'Historique', icon: 'list' },
+    { to: '/', label: 'nav.home', icon: 'home' }, { to: '/animaux', label: 'nav.animals', icon: 'cow' }, { to: '/scan', label: 'nav.scan', icon: 'scan' },
+    { to: '/marche', label: 'nav.market', icon: 'shop' }, { to: '/alertes', label: 'nav.alerts', icon: 'bell' },
+    { to: '/historique', label: 'nav.history', icon: 'list' },
   ],
   vet: [
-    { to: '/', label: 'Accueil', icon: 'home' }, { to: '/scan', label: 'Scanner', icon: 'scan' }, { to: '/animaux', label: 'Mes accès', icon: 'cow' },
-    { to: '/alertes', label: 'Alertes', icon: 'bell' }, { to: '/historique', label: 'Historique', icon: 'list' },
+    { to: '/', label: 'nav.home', icon: 'home' }, { to: '/scan', label: 'nav.scan', icon: 'scan' }, { to: '/animaux', label: 'nav.access', icon: 'cow' },
+    { to: '/alertes', label: 'nav.alerts', icon: 'bell' }, { to: '/historique', label: 'nav.history', icon: 'list' },
   ],
   agent: [
-    { to: '/', label: 'Ma zone', icon: 'home' }, { to: '/animaux', label: 'Animaux', icon: 'cow' }, { to: '/scan', label: 'Scanner', icon: 'scan' },
-    { to: '/alertes', label: 'Alertes', icon: 'bell' }, { to: '/historique', label: 'Historique', icon: 'list' },
+    { to: '/', label: 'nav.zone', icon: 'home' }, { to: '/animaux', label: 'nav.animals', icon: 'cow' }, { to: '/scan', label: 'nav.scan', icon: 'scan' },
+    { to: '/alertes', label: 'nav.alerts', icon: 'bell' }, { to: '/historique', label: 'nav.history', icon: 'list' },
   ],
   particulier: [
-    { to: '/', label: 'Accueil', icon: 'home' }, { to: '/marche', label: 'Marché', icon: 'shop' }, { to: '/demandes', label: 'Mes demandes', icon: 'list' },
-    { to: '/animaux', label: 'Mes animaux', icon: 'cow' }, { to: '/historique', label: 'Historique', icon: 'list' },
+    { to: '/', label: 'nav.home', icon: 'home' }, { to: '/marche', label: 'nav.market', icon: 'shop' }, { to: '/demandes', label: 'nav.requests', icon: 'list' },
+    { to: '/animaux', label: 'nav.myAnimals', icon: 'cow' }, { to: '/historique', label: 'nav.history', icon: 'list' },
   ],
   autorite: [
-    { to: '/', label: 'Accueil', icon: 'home' }, { to: '/stats', label: 'Indicateurs', icon: 'chart' }, { to: '/alertes', label: 'Alertes', icon: 'bell' },
-    { to: '/veterinaires', label: 'Vétérinaires', icon: 'shield' }, { to: '/animaux', label: 'Animaux', icon: 'cow' },
-    { to: '/audit', label: 'Audit', icon: 'list' },
+    { to: '/', label: 'nav.home', icon: 'home' }, { to: '/stats', label: 'nav.stats', icon: 'chart' }, { to: '/alertes', label: 'nav.alerts', icon: 'bell' },
+    { to: '/veterinaires', label: 'nav.vets', icon: 'shield' }, { to: '/animaux', label: 'nav.animals', icon: 'cow' },
+    { to: '/audit', label: 'nav.audit', icon: 'list' },
   ],
 };
 
@@ -65,6 +65,7 @@ function usePending(): number {
 
 export function Shell({ children }: { children: ReactNode }) {
   const { user } = useAuth();
+  const { t } = useLang();
   const { path } = useLoc();
   const online = useOnline();
   const pending = usePending();
@@ -84,27 +85,28 @@ export function Shell({ children }: { children: ReactNode }) {
   return (
     <div className={`app ${user.prefs.simple ? 'simple' : ''}`}>
       <header className="top">
-        <Link to="/" className="logo"><i><Icon name="heart" size={18} /></i> Carnet Bétail</Link>
+        <Link to="/" className="logo"><i><Icon name="heart" size={18} /></i> {t('app.name')}</Link>
         <span className="grow" />
-        <Link to="/envoi" className={`netchip ${online ? '' : 'off'}`} aria-label={online ? 'En ligne' : 'Hors-ligne'}>
-          <span className="dot" /> <span className="hide-sm">{online ? 'En ligne' : 'Hors-ligne'}</span>
+        <Link to="/envoi" className={`netchip ${online ? '' : 'off'}`} aria-label={online ? t('shell.online') : t('shell.offline')}>
+          <span className="dot" /> <span className="hide-sm">{online ? t('shell.online') : t('shell.offline')}</span>
           {pending > 0 && <b className="count" aria-label={`${pending} à envoyer`}>{pending}</b>}
         </Link>
-        <Link to="/notifications" className="icon-btn bell" aria-label={unread ? `Notifications : ${unread} non lue(s)` : 'Notifications'}><Icon name="bell" />{unread > 0 && <b className="count">{unread > 9 ? '9+' : unread}</b>}</Link>
-        <Link to="/profil" className="icon-btn" aria-label="Mon profil"><Icon name="user" /></Link>
+        <LangPicker compact />
+        <Link to="/notifications" className="icon-btn bell" aria-label={unread ? `${t('shell.notifications')} : ${unread}` : t('shell.notifications')}><Icon name="bell" />{unread > 0 && <b className="count">{unread > 9 ? '9+' : unread}</b>}</Link>
+        <Link to="/profil" className="icon-btn" aria-label={t('shell.profile')}><Icon name="user" /></Link>
       </header>
       <div className="body">
         <nav className="side" aria-label="Navigation">
           {nav.map((n) => (
-            <Link key={n.to} to={n.to} aria-current={active(n.to) ? 'page' : undefined}><Icon name={n.icon} /> {n.label}</Link>
+            <Link key={n.to} to={n.to} aria-current={active(n.to) ? 'page' : undefined}><Icon name={n.icon} /> {t(n.label)}</Link>
           ))}
-          <span className="foot">{user.name}<br />{ROLE_LABEL[user.role]}{user.zone ? ` · ${user.zone.name}` : ''}</span>
+          <span className="foot">{user.name}<br />{t(`role.${user.role}`)}{user.zone ? ` · ${user.zone.name}` : ''}</span>
         </nav>
-        <main><div className="wrap">{!online && <div className="banner off" role="status">Vous êtes hors-ligne. Vos saisies sont gardées sur ce téléphone et seront envoyées au retour du réseau.</div>}{children}</div></main>
+        <main><div className="wrap">{!online && <div className="banner off" role="status">{t('shell.offlineBanner')}</div>}{children}</div></main>
       </div>
       <nav className="bar" aria-label="Navigation">
         {nav.map((n) => (
-          <Link key={n.to} to={n.to} aria-current={active(n.to) ? 'page' : undefined}><Icon name={n.icon} /><span>{n.label}</span></Link>
+          <Link key={n.to} to={n.to} aria-current={active(n.to) ? 'page' : undefined}><Icon name={n.icon} /><span>{t(n.label)}</span></Link>
         ))}
       </nav>
     </div>

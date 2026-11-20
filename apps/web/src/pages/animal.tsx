@@ -1,8 +1,9 @@
+import { playPhrase, useLang } from '../i18n';
 import { useEffect, useState, type ReactNode } from 'react';
 import { ApiError, api, photoSrc, qs } from '../api/client';
 import { submitOp } from '../api/offline';
 import type { Animal, Case, Flow, Grant, HealthEvent, HealthSummary, VetSummary } from '../api/types';
-import { Badge, Card, Empty, ErrorBox, Field, Icon, Modal, PageHead, QrCode, Spinner, useAction, useQuery, useToast } from '../ui/kit';
+import { Badge, Card, Empty, ErrorBox, Field, Icon, Modal, PageHead, QrCode, Spinner, Speak, useAction, useAutoSpeak, useQuery, useToast } from '../ui/kit';
 import { useAuth } from '../ui/auth';
 import { Link, back, navigate, useLoc } from '../lib/router';
 import { DateRange, ResetFilters, SearchBox } from '../ui/filters';
@@ -113,6 +114,7 @@ function CaseModal({ a, onClose, onDone }: { a: Animal; onClose: () => void; onD
   const [deaths, setDeaths] = useState('0');
   const [note, setNote] = useState('');
   const [err, setErr] = useState<Record<string, string>>({});
+  const { t } = useLang();
   const { busy, send } = useOp(() => { onDone(); onClose(); });
   const toggle = (s: string) => setSyms((x) => (x.includes(s) ? x.filter((y) => y !== s) : [...x, s]));
   const submit = (e: React.FormEvent) => {
@@ -123,18 +125,49 @@ function CaseModal({ a, onClose, onDone }: { a: Animal; onClose: () => void; onD
     void send('case.create', p, `Cas de maladie (${a.name})`, 'Cas signalé', setErr);
   };
   return (
-    <Modal title="Signaler une maladie" onClose={onClose} wide>
+    <Modal title={t('sick.title')} onClose={onClose} wide>
       <form className="form" onSubmit={submit}>
-        <fieldset className="symptoms"><legend>Ce que vous observez</legend>
-          {SYMPTOMS.map(([s, i]) => <button type="button" key={s} className="chip" aria-pressed={syms.includes(s)} onClick={() => toggle(s)}><span aria-hidden="true">{i}</span> {s}</button>)}
+        <fieldset className="symptoms"><legend>{t('sick.observe')}</legend>
+          {SYMPTOMS.map(([s, i]) => <button type="button" key={s} className="chip" aria-pressed={syms.includes(s)} onClick={() => toggle(s)}><span aria-hidden="true">{i}</span> {t(`sym.${s}`)}</button>)}
         </fieldset>
         <Field label="Maladie suspectée ou confirmée (facultatif)" hint="Séparez par des virgules. Laissez vide si vous ne savez pas : un vétérinaire pourra préciser." error={err.diseases}>{(id) => <input id={id} value={diseases} onChange={(e) => setDiseases(e.target.value)} placeholder="peste porcine africaine" />}</Field>
-        <Field label="Gravité">{(id) => <select id={id} value={sev} onChange={(e) => setSev(e.target.value)}>{Object.entries(SEVERITY).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>}</Field>
-        <Field label="Têtes touchées" error={err.affectedCount}>{(id) => <input id={id} type="number" min={1} value={count} onChange={(e) => setCount(e.target.value)} required inputMode="numeric" />}</Field>
-        <Field label="Morts déjà constatées" error={err.deaths}>{(id) => <input id={id} type="number" min={0} value={deaths} onChange={(e) => setDeaths(e.target.value)} inputMode="numeric" />}</Field>
+        <Field label={t('sick.severity')}>{(id) => <select id={id} value={sev} onChange={(e) => setSev(e.target.value)}>{Object.entries(SEVERITY).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>}</Field>
+        <Field label={t('sick.affected')} error={err.affectedCount}>{(id) => <input id={id} type="number" min={1} value={count} onChange={(e) => setCount(e.target.value)} required inputMode="numeric" />}</Field>
+        <Field label={t('sick.deaths')} error={err.deaths}>{(id) => <input id={id} type="number" min={0} value={deaths} onChange={(e) => setDeaths(e.target.value)} inputMode="numeric" />}</Field>
         <Field label="Note (facultatif)" error={err.note}>{(id) => <textarea id={id} rows={2} value={note} onChange={(e) => setNote(e.target.value)} maxLength={1000} />}</Field>
-        <Footer onClose={onClose} busy={busy} label="Signaler" />
+        <Footer onClose={onClose} busy={busy} label={t('sick.submit')} />
       </form>
+    </Modal>
+  );
+}
+
+/** Version « sans lecture » : 3 étapes, grosses images, la voix dit chaque consigne toute seule. */
+function SimpleCaseModal({ a, onClose, onDone }: { a: Animal; onClose: () => void; onDone: () => void }) {
+  const [step, setStep] = useState(0);
+  const [syms, setSyms] = useState<string[]>([]);
+  const [count, setCount] = useState(1);
+  const { t, lang } = useLang();
+  const { user } = useAuth();
+  const { busy, send } = useOp(() => { playPhrase(lang, 'say.sick.done', t('say.sick.done')); onDone(); onClose(); });
+  const keys = ['say.sick.symptoms', 'say.sick.count', 'say.sick.confirm'];
+  useAutoSpeak(user!.prefs.autoVoice !== false, keys[step]);
+  const toggle = (s: string) => { setSyms((x) => (x.includes(s) ? x.filter((y) => y !== s) : [...x, s])); playPhrase(lang, `sym.${s}`, t(`sym.${s}`)); };
+  const submit = () => void send('case.create', { animalId: a.id, diseases: [syms[0] ?? 'à préciser'], affectedCount: count, severity: 'moyenne', symptoms: syms, deaths: 0 }, `Cas de maladie (${a.name})`, 'Cas signalé');
+  return (
+    <Modal title={`🤒 ${a.name}`} onClose={onClose} wide>
+      <div className="sstep">
+        <div className="sdots" aria-hidden="true">{[0, 1, 2].map((i) => <span key={i} className={i <= step ? 'on' : ''} />)}</div>
+        <p className="sask"><Speak k={keys[step]} text="" /> {t(keys[step])}</p>
+        {step === 0 && <div className="sbig">{SYMPTOMS.map(([s, i]) => <button type="button" key={s} className="sbtn" aria-pressed={syms.includes(s)} aria-label={t(`sym.${s}`)} onClick={() => toggle(s)}><span aria-hidden="true">{i}</span></button>)}</div>}
+        {step === 1 && <div className="scount"><button type="button" className="sbtn" aria-label="−" onClick={() => setCount((c) => Math.max(1, c - 1))}>➖</button><output aria-live="polite">{count}</output><button type="button" className="sbtn" aria-label="+" onClick={() => setCount((c) => c + 1)}>➕</button></div>}
+        {step === 2 && <div className="sbig">{syms.map((s) => <span key={s} className="sbtn on" aria-label={t(`sym.${s}`)}>{SYMPTOMS.find((x) => x[0] === s)?.[1]}</span>)}<span className="sbtn on" aria-label={String(count)}>🐄 × {count}</span></div>}
+        <div className="sact">
+          <button type="button" className="sbtn no" aria-label={t('simple.cancel')} onClick={() => (step === 0 ? onClose() : setStep(step - 1))}>{step === 0 ? '✖' : '⬅'}</button>
+          {step < 2
+            ? <button type="button" className="sbtn yes" aria-label={t('simple.next')} disabled={step === 0 && !syms.length} onClick={() => setStep(step + 1)}>➡</button>
+            : <button type="button" className="sbtn yes" aria-label={t('simple.send')} disabled={busy} onClick={submit}>✔</button>}
+        </div>
+      </div>
     </Modal>
   );
 }
@@ -592,7 +625,7 @@ export function AnimalPage({ id }: { id: string }) {
 
       {modal === 'event' && <EventModal a={an} onClose={close} onDone={reload} correct={correct} />}
       {modal === 'mortalite' && <MortalityModal a={an} onClose={close} onDone={reload} />}
-      {modal === 'case' && <CaseModal a={an} onClose={close} onDone={reload} />}
+      {modal === 'case' && (user?.prefs.simple ? <SimpleCaseModal a={an} onClose={close} onDone={reload} /> : <CaseModal a={an} onClose={close} onDone={reload} />)}
       {(modal === 'sale' || modal === 'slaughter' || modal === 'transfer') && <FlowModal a={an} kind={modal} onClose={close} onDone={reload} />}
       {(modal === 'theft' || modal === 'recovery') && <SimpleActionModal a={an} kind={modal} onClose={close} onDone={reload} />}
       {modal === 'listing' && <ListingModal a={an} onClose={close} onDone={reload} />}

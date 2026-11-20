@@ -1,0 +1,44 @@
+// Parcours « mode simple » : accueil qui parle, signalement de maladie en 3 étapes sans lire.
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createMock } from './mock-server.mjs';
+const { chromium } = createRequire(import.meta.url)('playwright');
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const mock = createMock({ staticDir: join(root, 'dist') });
+await new Promise((r) => mock.server.listen(0, r));
+const base = `http://localhost:${mock.server.address().port}`;
+const browser = await chromium.launch();
+let fails = 0; const ok = (c, m) => { console.log(`${c ? 'OK  ' : 'FAIL'} ${m}`); if (!c) fails++; };
+const ctx = await browser.newContext({ viewport: { width: 390, height: 800 } });
+await ctx.addInitScript(() => { window.__said = []; window.SpeechSynthesisUtterance = class { constructor(t) { this.text = t; } }; Object.defineProperty(window, 'speechSynthesis', { value: { cancel() {}, speak(u) { window.__said.push(u.text); } } }); });
+const page = await ctx.newPage(); const errors = []; page.on('pageerror', (e) => errors.push(e.message));
+try {
+  await page.goto(base); await page.waitForURL('**/#/connexion');
+  await page.fill('input[autocomplete=username]', '0712345678'); await page.fill('input[type=password]', 'Demo1234!'); await page.click('button.pri');
+  await page.waitForSelector('.app');
+  await page.goto(base + '/#/animaux/nouveau'); await page.getByLabel("Nom de l'animal").fill('Bella'); await page.getByLabel('Zone').selectOption({ label: 'Korhogo' });
+  await page.getByRole('button', { name: 'Créer la fiche' }).click(); await page.getByRole('heading', { name: 'Bella' }).waitFor();
+  await page.goto(base + '/#/profil'); await page.getByLabel(/Mode simple/).click(); await page.waitForTimeout(500);
+  await page.goto(base + '/#/'); await page.waitForTimeout(900);
+  ok((await page.evaluate(() => window.__said)).includes('Bonjour. Que voulez-vous faire ?'), "l'accueil simple parle tout seul");
+  ok(await page.locator('.tile').count() === 6, '6 grosses tuiles');
+  await page.goto(base + '/#/animaux'); await page.getByText('Bella').first().click(); await page.getByRole('heading', { name: 'Bella' }).waitFor();
+  await page.getByRole('button', { name: /malad/i }).first().click();
+  await page.waitForTimeout(700);
+  ok((await page.evaluate(() => window.__said)).includes("Touchez ce que vous voyez sur l'animal."), 'étape 1 dite à voix haute');
+  ok(await page.getByRole('button', { name: 'Envoyer', exact: true }).count() === 0 && await page.getByRole('button', { name: 'Suivant' }).isDisabled(), 'suivant bloqué sans symptôme');
+  await page.getByRole('button', { name: 'fièvre' }).click(); await page.getByRole('button', { name: 'toux' }).click();
+  await page.getByRole('button', { name: 'Suivant' }).click(); await page.waitForTimeout(600);
+  ok((await page.evaluate(() => window.__said)).includes("Combien d'animaux sont malades ?"), 'étape 2 dite');
+  await page.getByRole('button', { name: '+' }).click(); await page.getByRole('button', { name: '+' }).click();
+  ok((await page.locator('output').textContent()) === '3', 'compteur à 3');
+  await page.getByRole('button', { name: 'Suivant' }).click(); await page.waitForTimeout(600);
+  await page.getByRole('button', { name: 'Envoyer', exact: true }).click(); await page.waitForTimeout(800);
+  const c = mock.cases[0];
+  ok(c && c.affectedCount === 3 && c.symptoms.join() === 'fièvre,toux', 'cas envoyé : 3 têtes, fièvre + toux');
+  ok((await page.evaluate(() => window.__said)).includes("C'est envoyé. Un vétérinaire va être prévenu."), 'confirmation dite');
+  ok(errors.length === 0, 'aucune erreur JavaScript ' + errors.join('|'));
+} catch (e) { console.log('FAIL', e.message); fails++; await page.screenshot({ path: 'test/fail.png' }); }
+await browser.close(); mock.server.close();
+console.log(fails ? `${fails} échec(s)` : 'Tout passe'); process.exit(fails ? 1 : 0);
